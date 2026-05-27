@@ -4,10 +4,10 @@ const log = std.log.scoped(.tlb);
 const assert = std.debug.assert;
 const sha256 = std.crypto.hash.sha2.Sha256;
 
-pub const MaxCellSizeBits = 1023;
-pub const MaxCellSizeBytes = 128;
-pub const MaxCellDepth = 1024;
-pub const MaxCellSerializedBytes = 2 + MaxCellSizeBytes + 4 * (32 + 2); // 266
+pub const cell_size_bits_max = 1023;
+pub const cell_size_bytes_max = 128;
+pub const cell_depth_max = 1024;
+pub const cell_serialized_bytes_max = 2 + cell_size_bytes_max + 4 * (32 + 2); // 266
 
 pub const CellT = enum(u8) { Ordinary, PrunedBranch, LibraryReference, MerkleProof, MerkleUpdate };
 
@@ -62,46 +62,45 @@ pub const Cell = struct {
 
     // serialize a TVM Cell according to documentation:
     // https://docs.ton.org/blockchain-basics/primitives/serialization/cells#standard-cell-representation-and-its-hash
-    pub fn serialize(self: Self, dst: *[MaxCellSerializedBytes]u8) ErrCell!usize {
+    pub fn serialize(self: Self, dst: *[cell_serialized_bytes_max]u8) ErrCell!usize {
         @memset(dst, 0);
 
-        var i: u8 = 0;
-        while (i < 4 and self.References[i] != null) : (i += 1) {}
-        const reference_cnt: u8 = i;
+        var ref_index: u8 = 0;
+        while (ref_index < 4 and self.References[ref_index] != null) : (ref_index += 1) {}
+        const reference_cnt: u8 = ref_index;
 
-        const b = self.data_bit_len;
-        if (b > MaxCellSizeBits) return ErrCell.CellDataTooBig;
+        const bit_len = self.data_bit_len;
+        if (bit_len > cell_size_bits_max) return ErrCell.CellDataTooBig;
 
-        const s: u8 = @intFromBool(self.T != CellT.Ordinary);
+        const is_special: u8 = @intFromBool(self.T != CellT.Ordinary);
 
-        // encode references counts
-        var sz: usize = 0;
-        dst[0] = reference_cnt + D1IsSpecialMultiplier * s + D1LevelMultiplier * self.level;
-        dst[1] = @intCast(b / 8 + (b + 7) / 8);
-        sz += 2;
+        var byte_count: usize = 0;
+        dst[0] = reference_cnt + D1IsSpecialMultiplier * is_special + D1LevelMultiplier * self.level;
+        dst[1] = @intCast(bit_len / 8 + (bit_len + 7) / 8);
+        byte_count += 2;
 
-        const data_bytes = (b + 7) / 8;
-        @memcpy(dst[sz .. sz + data_bytes], self.Data[0..data_bytes]);
-        sz += data_bytes;
-        if (b % 8 != 0) {
-            dst[sz - 1] |= @as(u8, 1) << @intCast(7 - (b % 8));
+        const data_bytes = (bit_len + 7) / 8;
+        @memcpy(dst[byte_count .. byte_count + data_bytes], self.Data[0..data_bytes]);
+        byte_count += data_bytes;
+        if (bit_len % 8 != 0) {
+            dst[byte_count - 1] |= @as(u8, 1) << @intCast(7 - (bit_len % 8));
         }
 
-        for (0..reference_cnt) |j| {
-            const ref = self.References[j].?;
-            const d = try ref.depth();
-            std.mem.writeInt(u16, dst[sz..][0..RefDepthBytes], d, .big);
-            sz += RefDepthBytes;
+        for (0..reference_cnt) |ref_i| {
+            const ref = self.References[ref_i].?;
+            const ref_depth = try ref.depth();
+            std.mem.writeInt(u16, dst[byte_count..][0..RefDepthBytes], ref_depth, .big);
+            byte_count += RefDepthBytes;
         }
 
-        for (0..reference_cnt) |j| {
-            const ref = self.References[j].?;
+        for (0..reference_cnt) |ref_i| {
+            const ref = self.References[ref_i].?;
             const ref_hash = try ref.computeHash();
-            @memcpy(dst[sz..][0..RefHashBytes], &ref_hash);
-            sz += RefHashBytes;
+            @memcpy(dst[byte_count..][0..RefHashBytes], &ref_hash);
+            byte_count += RefHashBytes;
         }
 
-        return sz;
+        return byte_count;
     }
 
     pub fn deserialize(self: *Self, src: []u8) ErrCell!void {
@@ -121,7 +120,7 @@ pub const Cell = struct {
         const data_bytes: usize = (d2 + 1) / 2;
 
         // sanity check on data_bytes decoded
-        if (data_bytes > MaxCellSizeBytes) return ErrCell.CellDataTooBig;
+        if (data_bytes > cell_size_bytes_max) return ErrCell.CellDataTooBig;
         if (src.len < serializedLen(data_bytes, reference_cnt)) return ErrCell.BufferTooSmall;
         if (self.Data.len < data_bytes) return ErrCell.BufferTooSmall;
 
@@ -159,9 +158,9 @@ pub const Cell = struct {
         self.visiting = true;
         defer self.visiting = false;
 
-        var buf: [MaxCellSerializedBytes]u8 = undefined;
-        const sz = try self.serialize(&buf);
-        sha256.hash(buf[0..sz], &self.hash, .{});
+        var buf: [cell_serialized_bytes_max]u8 = undefined;
+        const byte_count = try self.serialize(&buf);
+        sha256.hash(buf[0..byte_count], &self.hash, .{});
 
         return self.hash;
     }
@@ -174,21 +173,21 @@ pub const Cell = struct {
         var max_child: u16 = 0;
         for (self.References) |ref| {
             const ref_cell = ref orelse break;
-            const d = try ref_cell.depth();
-            if (d > max_child) max_child = d;
+            const child_depth = try ref_cell.depth();
+            if (child_depth > max_child) max_child = child_depth;
         }
 
         const result: u16 = if (max_child == 0 and self.References[0] == null) 0 else max_child + 1;
 
-        if (result > MaxCellDepth) return ErrCell.MaxDepthExceeded;
+        if (result > cell_depth_max) return ErrCell.MaxDepthExceeded;
 
         return result;
     }
 
     pub fn refCount(self: *Self) usize {
-        var i: usize = 0;
-        while (i < 4 and self.References[i] != null) : (i += 1) {}
-        return i;
+        var ref_index: usize = 0;
+        while (ref_index < 4 and self.References[ref_index] != null) : (ref_index += 1) {}
+        return ref_index;
     }
 };
 
@@ -224,12 +223,12 @@ test "linear chain depth" {
 }
 
 test "depth exceeding max returns error" {
-    var cells: [MaxCellDepth + 2]Cell = undefined;
+    var cells: [cell_depth_max + 2]Cell = undefined;
     cells[0] = makeLeaf();
-    for (1..MaxCellDepth + 2) |i| {
+    for (1..cell_depth_max + 2) |i| {
         cells[i] = Cell.init(.Ordinary, &.{}, 0, .{ &cells[i - 1], null, null, null });
     }
-    try std.testing.expectError(error.MaxDepthExceeded, cells[MaxCellDepth + 1].depth());
+    try std.testing.expectError(error.MaxDepthExceeded, cells[cell_depth_max + 1].depth());
 }
 
 test "depth with four references takes the max" {
@@ -252,9 +251,9 @@ test "dag shared reference does not trigger cycle detection" {
 
 test "serialize empty leaf" {
     var cell = makeLeaf();
-    var buf: [MaxCellSerializedBytes]u8 = undefined;
-    const sz = try cell.serialize(&buf);
-    try std.testing.expectEqual(2, sz);
+    var buf: [cell_serialized_bytes_max]u8 = undefined;
+    const byte_count = try cell.serialize(&buf);
+    try std.testing.expectEqual(2, byte_count);
     try std.testing.expectEqual(0x00, buf[0]); // d1: 0 refs, ordinary, level 0
     try std.testing.expectEqual(0x00, buf[1]); // d2: 0 bits
 }
@@ -262,9 +261,9 @@ test "serialize empty leaf" {
 test "serialize byte-aligned data" {
     var data = [_]u8{0xAB};
     var cell = Cell.init(.Ordinary, &data, 8, .{ null, null, null, null });
-    var buf: [MaxCellSerializedBytes]u8 = undefined;
-    const sz = try cell.serialize(&buf);
-    try std.testing.expectEqual(3, sz);
+    var buf: [cell_serialized_bytes_max]u8 = undefined;
+    const byte_count = try cell.serialize(&buf);
+    try std.testing.expectEqual(3, byte_count);
     try std.testing.expectEqual(0x00, buf[0]); // d1
     try std.testing.expectEqual(0x02, buf[1]); // d2: floor(8/8) + ceil(8/8) = 2
     try std.testing.expectEqual(0xAB, buf[2]);
@@ -273,34 +272,34 @@ test "serialize byte-aligned data" {
 test "serialize non-byte-aligned data sets completion tag" {
     var data = [_]u8{0x00};
     var cell = Cell.init(.Ordinary, &data, 4, .{ null, null, null, null });
-    var buf: [MaxCellSerializedBytes]u8 = undefined;
-    const sz = try cell.serialize(&buf);
-    try std.testing.expectEqual(3, sz);
+    var buf: [cell_serialized_bytes_max]u8 = undefined;
+    const byte_count = try cell.serialize(&buf);
+    try std.testing.expectEqual(3, byte_count);
     try std.testing.expectEqual(0x01, buf[1]); // d2: ceil(4/8) = 1
     try std.testing.expectEqual(0x08, buf[2]); // completion tag at bit 3 (1 << (7-4))
 }
 
 test "serialize exotic cell sets is_special bit in d1" {
     var cell = Cell.init(.PrunedBranch, &.{}, 0, .{ null, null, null, null });
-    var buf: [MaxCellSerializedBytes]u8 = undefined;
+    var buf: [cell_serialized_bytes_max]u8 = undefined;
     _ = try cell.serialize(&buf);
     try std.testing.expectEqual(8, buf[0] & 0x08);
 }
 
 test "serialize data too big returns error" {
-    var data: [MaxCellSizeBytes]u8 = undefined;
-    var cell = Cell.init(.Ordinary, &data, MaxCellSizeBits + 1, .{ null, null, null, null });
-    var buf: [MaxCellSerializedBytes]u8 = undefined;
+    var data: [cell_size_bytes_max]u8 = undefined;
+    var cell = Cell.init(.Ordinary, &data, cell_size_bits_max + 1, .{ null, null, null, null });
+    var buf: [cell_serialized_bytes_max]u8 = undefined;
     try std.testing.expectError(error.CellDataTooBig, cell.serialize(&buf));
 }
 
 test "serialize with references writes depths then hashes" {
     var child = makeLeaf();
     var cell = Cell.init(.Ordinary, &.{}, 0, .{ &child, null, null, null });
-    var buf: [MaxCellSerializedBytes]u8 = undefined;
-    const sz = try cell.serialize(&buf);
+    var buf: [cell_serialized_bytes_max]u8 = undefined;
+    const byte_count = try cell.serialize(&buf);
     // 2 descriptor + 0 data + 1*2 depth + 1*32 hash = 36
-    try std.testing.expectEqual(36, sz);
+    try std.testing.expectEqual(36, byte_count);
     // depth of leaf = 0, written as big-endian u16 at offset 2
     try std.testing.expectEqual(0x00, buf[2]);
     try std.testing.expectEqual(0x00, buf[3]);
@@ -331,12 +330,12 @@ fn cellWithBuffer(buf: []u8) Cell {
 
 test "deserialize empty leaf" {
     var cell = makeLeaf();
-    var buf: [MaxCellSerializedBytes]u8 = undefined;
-    const sz = try cell.serialize(&buf);
+    var buf: [cell_serialized_bytes_max]u8 = undefined;
+    const byte_count = try cell.serialize(&buf);
 
-    var out_data: [MaxCellSizeBytes]u8 = undefined;
+    var out_data: [cell_size_bytes_max]u8 = undefined;
     var out = cellWithBuffer(&out_data);
-    try out.deserialize(buf[0..sz]);
+    try out.deserialize(buf[0..byte_count]);
 
     try std.testing.expectEqual(CellT.Ordinary, out.T);
     try std.testing.expectEqual(@as(usize, 0), out.data_bit_len);
@@ -346,12 +345,12 @@ test "deserialize empty leaf" {
 test "deserialize byte-aligned data round-trip" {
     var data = [_]u8{0xAB};
     var cell = Cell.init(.Ordinary, &data, 8, .{ null, null, null, null });
-    var buf: [MaxCellSerializedBytes]u8 = undefined;
-    const sz = try cell.serialize(&buf);
+    var buf: [cell_serialized_bytes_max]u8 = undefined;
+    const byte_count = try cell.serialize(&buf);
 
-    var out_data: [MaxCellSizeBytes]u8 = undefined;
+    var out_data: [cell_size_bytes_max]u8 = undefined;
     var out = cellWithBuffer(&out_data);
-    try out.deserialize(buf[0..sz]);
+    try out.deserialize(buf[0..byte_count]);
 
     try std.testing.expectEqual(CellT.Ordinary, out.T);
     try std.testing.expectEqual(@as(usize, 8), out.data_bit_len);
@@ -361,12 +360,12 @@ test "deserialize byte-aligned data round-trip" {
 test "deserialize non-byte-aligned data strips completion tag" {
     var data = [_]u8{0xF0}; // top 4 bits are data
     var cell = Cell.init(.Ordinary, &data, 4, .{ null, null, null, null });
-    var buf: [MaxCellSerializedBytes]u8 = undefined;
-    const sz = try cell.serialize(&buf);
+    var buf: [cell_serialized_bytes_max]u8 = undefined;
+    const byte_count = try cell.serialize(&buf);
 
-    var out_data: [MaxCellSizeBytes]u8 = undefined;
+    var out_data: [cell_size_bytes_max]u8 = undefined;
     var out = cellWithBuffer(&out_data);
-    try out.deserialize(buf[0..sz]);
+    try out.deserialize(buf[0..byte_count]);
 
     try std.testing.expectEqual(@as(usize, 4), out.data_bit_len);
     try std.testing.expectEqual(@as(u8, 0xF0), out.Data[0]);
@@ -382,12 +381,12 @@ test "deserialize exotic cell recognizes all types" {
     for (cases) |c| {
         var data = [_]u8{c.tb};
         var cell = Cell.init(c.ct, &data, 8, .{ null, null, null, null });
-        var buf: [MaxCellSerializedBytes]u8 = undefined;
-        const sz = try cell.serialize(&buf);
+        var buf: [cell_serialized_bytes_max]u8 = undefined;
+        const byte_count = try cell.serialize(&buf);
 
-        var out_data: [MaxCellSizeBytes]u8 = undefined;
+        var out_data: [cell_size_bytes_max]u8 = undefined;
         var out = cellWithBuffer(&out_data);
-        try out.deserialize(buf[0..sz]);
+        try out.deserialize(buf[0..byte_count]);
 
         try std.testing.expectEqual(c.ct, out.T);
         try std.testing.expectEqual(@as(u8, c.tb), out.Data[0]);
@@ -396,21 +395,21 @@ test "deserialize exotic cell recognizes all types" {
 
 test "deserialize error: buffer too small" {
     var buf = [_]u8{0x00};
-    var out_data: [MaxCellSizeBytes]u8 = undefined;
+    var out_data: [cell_size_bytes_max]u8 = undefined;
     var out = cellWithBuffer(&out_data);
     try std.testing.expectError(error.BufferTooSmall, out.deserialize(&buf));
 }
 
 test "deserialize error: reference count too high" {
     var buf = [_]u8{ 0x05, 0x00 }; // d1: ref_cnt = 5
-    var out_data: [MaxCellSizeBytes]u8 = undefined;
+    var out_data: [cell_size_bytes_max]u8 = undefined;
     var out = cellWithBuffer(&out_data);
     try std.testing.expectError(error.InvalidCellDescriptor, out.deserialize(&buf));
 }
 
 test "deserialize error: invalid completion tag" {
     var buf = [_]u8{ 0x00, 0x01, 0x00 }; // d2=1 non-byte-aligned, but data byte is 0
-    var out_data: [MaxCellSizeBytes]u8 = undefined;
+    var out_data: [cell_size_bytes_max]u8 = undefined;
     var out = cellWithBuffer(&out_data);
     try std.testing.expectError(error.InvalidCompletionTag, out.deserialize(&buf));
 }
@@ -418,7 +417,7 @@ test "deserialize error: invalid completion tag" {
 test "deserialize error: unknown exotic type byte" {
     // d1: is_special=1, d2=2 (1 byte), data[0]=0xFF
     var buf = [_]u8{ 0x08, 0x02, 0xFF };
-    var out_data: [MaxCellSizeBytes]u8 = undefined;
+    var out_data: [cell_size_bytes_max]u8 = undefined;
     var out = cellWithBuffer(&out_data);
     try std.testing.expectError(error.InvalidCellDescriptor, out.deserialize(&buf));
 }
@@ -427,11 +426,11 @@ test "fuzz serialize does not panic on arbitrary input" {
     const S = struct {
         fn run(_: void, smith: *std.testing.Smith) anyerror!void {
             const bit_len = smith.valueWithHash(u16, 0);
-            const data_bytes = @min((bit_len + 7) / 8, MaxCellSizeBytes);
-            var data: [MaxCellSizeBytes]u8 = undefined;
+            const data_bytes = @min((bit_len + 7) / 8, cell_size_bytes_max);
+            var data: [cell_size_bytes_max]u8 = undefined;
             smith.bytesWithHash(data[0..data_bytes], 1);
             var cell = Cell.init(.Ordinary, data[0..data_bytes], bit_len, .{ null, null, null, null });
-            var buf: [MaxCellSerializedBytes]u8 = undefined;
+            var buf: [cell_serialized_bytes_max]u8 = undefined;
             _ = cell.serialize(&buf) catch |err| switch (err) {
                 error.CellDataTooBig => {},
                 else => return err,

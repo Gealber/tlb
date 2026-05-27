@@ -8,8 +8,8 @@ const assert = std.debug.assert;
 
 const cell_mod = @import("cell.zig");
 pub const Cell = cell_mod.Cell;
-const MaxCellSizeBits = cell_mod.MaxCellSizeBits;
-const MaxCellSizeBytes = cell_mod.MaxCellSizeBytes;
+const cell_size_bits_max = cell_mod.cell_size_bits_max;
+const cell_size_bytes_max = cell_mod.cell_size_bytes_max;
 
 pub const ErrSlice = error{
     NotEnoughBits,
@@ -199,7 +199,7 @@ pub const CellSlice = struct {
 // ── CellBuilder ────────────────────────────────────────────────────────────────
 
 pub const CellBuilder = struct {
-    data: [MaxCellSizeBytes]u8,
+    data: [cell_size_bytes_max]u8,
     bit_len: usize,
     refs: [4]?*Cell,
     ref_count: u3,
@@ -208,7 +208,7 @@ pub const CellBuilder = struct {
 
     pub fn init() Self {
         return .{
-            .data = [_]u8{0} ** MaxCellSizeBytes,
+            .data = [_]u8{0} ** cell_size_bytes_max,
             .bit_len = 0,
             .refs = .{ null, null, null, null },
             .ref_count = 0,
@@ -224,7 +224,7 @@ pub const CellBuilder = struct {
     }
 
     pub fn bitsLeft(self: Self) usize {
-        return MaxCellSizeBits - self.bit_len;
+        return cell_size_bits_max - self.bit_len;
     }
 
     pub fn refsLeft(self: Self) usize {
@@ -240,7 +240,7 @@ pub const CellBuilder = struct {
     pub fn storeUint(self: *Self, val: u64, n: u7) ErrSlice!void {
         if (n == 0) return;
 
-        if (self.bit_len + n > MaxCellSizeBits) return ErrSlice.CellFull;
+        if (self.bit_len + n > cell_size_bits_max) return ErrSlice.CellFull;
 
         writeUintAt(&self.data, self.bit_len, val, n);
         self.bit_len += n;
@@ -259,7 +259,7 @@ pub const CellBuilder = struct {
     // Append n bits from src, MSB-first (src bits packed from src[0] bit 7 downward).
     pub fn storeBits(self: *Self, src: []const u8, n: usize) ErrSlice!void {
         if (n == 0) return;
-        if (self.bit_len + n > MaxCellSizeBits) return ErrSlice.CellFull;
+        if (self.bit_len + n > cell_size_bits_max) return ErrSlice.CellFull;
 
         var remaining = n;
         var src_off: usize = 0;
@@ -286,7 +286,7 @@ pub const CellBuilder = struct {
     // Append all remaining bits and references from cs into this builder.
     pub fn storeSlice(self: *Self, cs_in: CellSlice) ErrSlice!void {
         var cs = cs_in;
-        if (self.bit_len + cs.bitsLeft() > MaxCellSizeBits) return ErrSlice.CellFull;
+        if (self.bit_len + cs.bitsLeft() > cell_size_bits_max) return ErrSlice.CellFull;
         if (self.refsLeft() < cs.refsLeft()) return ErrSlice.TooManyRefs;
 
         while (cs.bitsLeft() > 0) {

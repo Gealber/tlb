@@ -7,7 +7,7 @@ const crc32c = std.hash.crc.Crc32Iscsi.hash;
 const cell_mod = @import("cell.zig");
 pub const Cell = cell_mod.Cell;
 
-pub const MaxBoCCells: usize = 1 << 13;
+pub const boc_cells_max: usize = 1 << 13;
 
 pub const ErrBoC = error{ TooManyCells, EmptyRoots, BufferTooSmall, InvalidMagic, InvalidChecksum };
 
@@ -66,7 +66,7 @@ pub const BoC = struct {
             try visitCell(allocator, r, &visited, &list);
         }
 
-        if (list.items.len > MaxBoCCells) return ErrBoC.TooManyCells;
+        if (list.items.len > boc_cells_max) return ErrBoC.TooManyCells;
 
         const cells_out = try allocator.alloc(*Cell, list.items.len);
         errdefer allocator.free(cells_out);
@@ -86,33 +86,33 @@ pub const BoC = struct {
     }
 
     // Total bytes occupied by all cells in the flat array when serialized with
-    // s-byte reference indices (BoC format, not standalone Cell.serialize).
-    fn totCellsSize(self: *const Self, s: usize) usize {
-        var tot: usize = 0;
+    // cell_index_bytes-byte reference indices (BoC format, not standalone Cell.serialize).
+    fn totCellsSize(self: *const Self, cell_index_bytes: usize) usize {
+        var total: usize = 0;
         for (self.cells) |c| {
             const data_bytes = (c.data_bit_len + 7) / 8;
-            tot += 2 + data_bytes + c.refCount() * s;
+            total += 2 + data_bytes + c.refCount() * cell_index_bytes;
         }
-        return tot;
+        return total;
     }
 
     // Bytes needed to hold the serialized BoC (no index table, no CRC32C trailer).
     pub fn serializedSize(self: *const Self) usize {
-        const s: usize = bytesFor(self.cells.len);
-        const tot = self.totCellsSize(s);
-        const t: usize = bytesFor(tot);
-        // magic(4) + flags(1) + off_bytes(1) + cells_count(s) + roots_count(s)
-        // + absent(s) + tot_cells_size(t) + root_list(s*roots.len) + cell_data(tot)
-        return 4 + 1 + 1 + s * 3 + t + s * self.roots.len + tot;
+        const cell_index_bytes: usize = bytesFor(self.cells.len);
+        const total_cells_size = self.totCellsSize(cell_index_bytes);
+        const offset_bytes: usize = bytesFor(total_cells_size);
+        // magic(4) + flags(1) + off_bytes(1) + cells_count(cell_index_bytes) + roots_count(cell_index_bytes)
+        // + absent(cell_index_bytes) + tot_cells_size(offset_bytes) + root_list(cell_index_bytes*roots.len) + cell_data(total_cells_size)
+        return 4 + 1 + 1 + cell_index_bytes * 3 + offset_bytes + cell_index_bytes * self.roots.len + total_cells_size;
     }
 
     // Bytes needed to hold the serialized BoC with an index table (has_idx=1).
     pub fn serializedSizeIndexed(self: *const Self) usize {
-        const s: usize = bytesFor(self.cells.len);
-        const tot = self.totCellsSize(s);
-        const t: usize = bytesFor(tot);
-        // Same as serializedSize plus n*t bytes for the index table.
-        return 4 + 1 + 1 + s * 3 + t + s * self.roots.len + self.cells.len * t + tot;
+        const cell_index_bytes: usize = bytesFor(self.cells.len);
+        const total_cells_size = self.totCellsSize(cell_index_bytes);
+        const offset_bytes: usize = bytesFor(total_cells_size);
+        // Same as serializedSize plus n*offset_bytes bytes for the index table.
+        return 4 + 1 + 1 + cell_index_bytes * 3 + offset_bytes + cell_index_bytes * self.roots.len + self.cells.len * offset_bytes + total_cells_size;
     }
 
     // Bytes needed for a CRC32C-annotated BoC (append 4 to the base size).
@@ -129,18 +129,18 @@ pub const BoC = struct {
     //
     // Wire format (has_idx = indexed, has_crc32c always 0 here):
     //   [4]  magic 0xb5ee9c72
-    //   [1]  flags: bit7=has_idx, bit6=has_crc32c(0), bits2-0=s
-    //   [1]  off_bytes = t
-    //   [s]  cells_count
-    //   [s]  roots_count
-    //   [s]  absent_count (always 0)
-    //   [t]  tot_cells_size
-    //   [s * roots.len]  root_list
-    //   [n*t] index table (only when indexed): entry i = cumulative byte offset
+    //   [1]  flags: bit7=has_idx, bit6=has_crc32c(0), bits2-0=cell_index_bytes
+    //   [1]  off_bytes = offset_bytes
+    //   [cell_index_bytes]  cells_count
+    //   [cell_index_bytes]  roots_count
+    //   [cell_index_bytes]  absent_count (always 0)
+    //   [offset_bytes]  tot_cells_size
+    //   [cell_index_bytes * roots.len]  root_list
+    //   [n*offset_bytes] index table (only when indexed): entry i = cumulative byte offset
     //          to the end of cell i's data within the cell data section
     //   [tot_cells_size] cell data (children before parents)
     //
-    // Cell data references are s-byte big-endian flat-array indices,
+    // Cell data references are cell_index_bytes-byte big-endian flat-array indices,
     // not the (depth + hash) pairs used by Cell.serialize.
     fn serializeInner(self: *const Self, dst: []u8, indexed: bool) !usize {
         var index_map = std.AutoHashMap(*Cell, usize).init(self.allocator);
@@ -149,79 +149,79 @@ pub const BoC = struct {
             try index_map.put(c, i);
         }
 
-        const s: usize = bytesFor(self.cells.len);
-        const tot_cells_size = self.totCellsSize(s);
-        const t: usize = bytesFor(tot_cells_size);
+        const cell_index_bytes: usize = bytesFor(self.cells.len);
+        const total_cells_size = self.totCellsSize(cell_index_bytes);
+        const offset_bytes: usize = bytesFor(total_cells_size);
         const total: usize = if (indexed) self.serializedSizeIndexed() else self.serializedSize();
 
         if (dst.len < total) return ErrBoC.BufferTooSmall;
 
-        var off: usize = 0;
+        var offset: usize = 0;
 
-        std.mem.writeInt(u32, dst[off..][0..4], boc_magic, .big);
-        off += 4;
+        std.mem.writeInt(u32, dst[offset..][0..4], boc_magic, .big);
+        offset += 4;
 
-        dst[off] = @intCast(s & 0x07);
-        if (indexed) dst[off] |= 0x80;
-        off += 1;
+        dst[offset] = @intCast(cell_index_bytes & 0x07);
+        if (indexed) dst[offset] |= 0x80;
+        offset += 1;
 
-        dst[off] = @intCast(t);
-        off += 1;
+        dst[offset] = @intCast(offset_bytes);
+        offset += 1;
 
-        writeUintBE(dst[off .. off + s], self.cells.len);
-        off += s;
-        writeUintBE(dst[off .. off + s], self.roots.len);
-        off += s;
-        writeUintBE(dst[off .. off + s], 0);
-        off += s;
+        writeUintBE(dst[offset .. offset + cell_index_bytes], self.cells.len);
+        offset += cell_index_bytes;
+        writeUintBE(dst[offset .. offset + cell_index_bytes], self.roots.len);
+        offset += cell_index_bytes;
+        writeUintBE(dst[offset .. offset + cell_index_bytes], 0);
+        offset += cell_index_bytes;
 
-        writeUintBE(dst[off .. off + t], tot_cells_size);
-        off += t;
+        writeUintBE(dst[offset .. offset + offset_bytes], total_cells_size);
+        offset += offset_bytes;
 
         for (self.roots) |r| {
-            writeUintBE(dst[off .. off + s], r);
-            off += s;
+            writeUintBE(dst[offset .. offset + cell_index_bytes], r);
+            offset += cell_index_bytes;
         }
 
         // Index table: entry i = cumulative size of cells 0..i in the cell data section.
         if (indexed) {
-            var cum: usize = 0;
+            var cumulative_size: usize = 0;
             for (self.cells) |c| {
-                cum += 2 + (c.data_bit_len + 7) / 8 + c.refCount() * s;
-                writeUintBE(dst[off .. off + t], cum);
-                off += t;
+                cumulative_size += 2 + (c.data_bit_len + 7) / 8 + c.refCount() * cell_index_bytes;
+                writeUintBE(dst[offset .. offset + offset_bytes], cumulative_size);
+                offset += offset_bytes;
             }
         }
 
         for (self.cells) |c| {
-            const rc: usize = c.refCount();
+            const ref_count: usize = c.refCount();
             const is_special: u8 = @intFromBool(c.T != .Ordinary);
 
-            dst[off] = @intCast(rc + @as(usize, is_special) * 8 + @as(usize, c.level) * 32);
-            off += 1;
+            dst[offset] = @intCast(ref_count + @as(usize, is_special) * 8 + @as(usize, c.level) * 32);
+            offset += 1;
 
-            const b = c.data_bit_len;
-            dst[off] = @intCast(b / 8 + (b + 7) / 8);
-            off += 1;
+            const bit_len = c.data_bit_len;
+            dst[offset] = @intCast(bit_len / 8 + (bit_len + 7) / 8);
+            offset += 1;
 
-            const data_bytes = (b + 7) / 8;
+            const data_bytes = (bit_len + 7) / 8;
             if (data_bytes > 0) {
-                @memcpy(dst[off .. off + data_bytes], c.Data[0..data_bytes]);
-                off += data_bytes;
-                if (b % 8 != 0) {
-                    dst[off - 1] |= @as(u8, 1) << @intCast(7 - (b % 8));
+                @memcpy(dst[offset .. offset + data_bytes], c.Data[0..data_bytes]);
+                offset += data_bytes;
+                if (bit_len % 8 != 0) {
+                    dst[offset - 1] |= @as(u8, 1) << @intCast(7 - (bit_len % 8));
                 }
             }
 
-            for (0..rc) |j| {
-                const ref_idx = index_map.get(c.References[j].?).?;
-                writeUintBE(dst[off .. off + s], ref_idx);
-                off += s;
+            for (0..ref_count) |ref_i| {
+                const ref_idx = index_map.get(c.References[ref_i].?).?;
+                writeUintBE(dst[offset .. offset + cell_index_bytes], ref_idx);
+                offset += cell_index_bytes;
             }
         }
 
-        assert(off == total);
-        return off;
+        assert(offset == total);
+        return offset;
     }
 
     // Serialize this BoC into dst (has_idx=0, has_crc32c=0).
@@ -229,7 +229,7 @@ pub const BoC = struct {
         return self.serializeInner(dst, false);
     }
 
-    // Serialize with has_idx=1: appends an n*t-byte index table after the root list.
+    // Serialize with has_idx=1: appends an n*offset_bytes-byte index table after the root list.
     pub fn serializeIndexed(self: *const Self, dst: []u8) !usize {
         return self.serializeInner(dst, true);
     }
@@ -269,27 +269,27 @@ pub const BoC = struct {
         const flags_byte = src[4];
         const has_idx = (flags_byte & 0x80) != 0;
         const has_crc32c = (flags_byte & 0x40) != 0;
-        const s: usize = flags_byte & 0x07;
-        const t: usize = src[5];
+        const cell_index_bytes: usize = flags_byte & 0x07;
+        const offset_bytes: usize = src[5];
 
-        // Full variable-length header: 6 fixed + 3*s counts + t tot_cells_size.
-        if (src.len < 6 + s * 3 + t) return ErrBoC.BufferTooSmall;
+        // Full variable-length header: 6 fixed + 3*cell_index_bytes counts + offset_bytes tot_cells_size.
+        if (src.len < 6 + cell_index_bytes * 3 + offset_bytes) return ErrBoC.BufferTooSmall;
 
-        var off: usize = 6;
-        const n = readUintBE(src[off .. off + s]);
-        off += s;
-        const roots_count = readUintBE(src[off .. off + s]);
-        off += s;
-        off += s; // absent_count — not used
-        const tot_cells_size = readUintBE(src[off .. off + t]);
-        off += t;
+        var offset: usize = 6;
+        const cell_count = readUintBE(src[offset .. offset + cell_index_bytes]);
+        offset += cell_index_bytes;
+        const roots_count = readUintBE(src[offset .. offset + cell_index_bytes]);
+        offset += cell_index_bytes;
+        offset += cell_index_bytes; // absent_count — not used
+        const total_cells_size = readUintBE(src[offset .. offset + offset_bytes]);
+        offset += offset_bytes;
 
-        if (n == 0 or roots_count == 0) return ErrBoC.EmptyRoots;
-        if (n > MaxBoCCells) return ErrBoC.TooManyCells;
+        if (cell_count == 0 or roots_count == 0) return ErrBoC.EmptyRoots;
+        if (cell_count > boc_cells_max) return ErrBoC.TooManyCells;
 
-        const idx_table_size: usize = if (has_idx) n * t else 0;
+        const idx_table_size: usize = if (has_idx) cell_count * offset_bytes else 0;
         const crc_size: usize = if (has_crc32c) 4 else 0;
-        const needed = off + roots_count * s + idx_table_size + tot_cells_size + crc_size;
+        const needed = offset + roots_count * cell_index_bytes + idx_table_size + total_cells_size + crc_size;
         if (src.len < needed) return ErrBoC.BufferTooSmall;
 
         if (has_crc32c) {
@@ -302,35 +302,35 @@ pub const BoC = struct {
         const roots_out = try allocator.alloc(usize, roots_count);
         errdefer allocator.free(roots_out);
         for (roots_out) |*r| {
-            r.* = readUintBE(src[off .. off + s]);
-            off += s;
+            r.* = readUintBE(src[offset .. offset + cell_index_bytes]);
+            offset += cell_index_bytes;
         }
 
         // Skip index table if present.
-        if (has_idx) off += n * t;
+        if (has_idx) offset += cell_count * offset_bytes;
 
-        // Allocate cell structs and a single data buffer (tot_cells_size is an
+        // Allocate cell structs and a single data buffer (total_cells_size is an
         // upper bound on the total raw data bytes across all cells).
-        const cell_buf = try allocator.alloc(Cell, n);
+        const cell_buf = try allocator.alloc(Cell, cell_count);
         errdefer allocator.free(cell_buf);
-        const data_buf = try allocator.alloc(u8, tot_cells_size);
+        const data_buf = try allocator.alloc(u8, total_cells_size);
         errdefer allocator.free(data_buf);
 
         // Temporary per-cell ref-count and ref-index storage, freed before return.
-        const ref_count_buf = try allocator.alloc(u8, n);
+        const ref_count_buf = try allocator.alloc(u8, cell_count);
         defer allocator.free(ref_count_buf);
-        const ref_idx_buf = try allocator.alloc(usize, n * 4);
+        const ref_idx_buf = try allocator.alloc(usize, cell_count * 4);
         defer allocator.free(ref_idx_buf);
 
-        var data_off: usize = 0;
+        var data_offset: usize = 0;
 
         // Parse cell data.
-        for (0..n) |i| {
-            if (off + 2 > src.len) return ErrBoC.BufferTooSmall;
-            const d1 = src[off];
-            off += 1;
-            const d2 = src[off];
-            off += 1;
+        for (0..cell_count) |cell_i| {
+            if (offset + 2 > src.len) return ErrBoC.BufferTooSmall;
+            const d1 = src[offset];
+            offset += 1;
+            const d2 = src[offset];
+            offset += 1;
 
             const ref_count: u8 = d1 & 0x07;
             if (ref_count > 4) return cell_mod.ErrCell.InvalidCellDescriptor;
@@ -338,14 +338,14 @@ pub const BoC = struct {
             const level: u8 = d1 >> 5;
 
             const data_bytes: usize = (d2 + 1) / 2;
-            if (data_bytes > cell_mod.MaxCellSizeBytes) return cell_mod.ErrCell.CellDataTooBig;
-            if (off + data_bytes + ref_count * s > src.len) return ErrBoC.BufferTooSmall;
+            if (data_bytes > cell_mod.cell_size_bytes_max) return cell_mod.ErrCell.CellDataTooBig;
+            if (offset + data_bytes + ref_count * cell_index_bytes > src.len) return ErrBoC.BufferTooSmall;
 
             // Slice this cell's data out of the shared data_buf.
-            const cell_data = data_buf[data_off .. data_off + data_bytes];
-            @memcpy(cell_data, src[off .. off + data_bytes]);
-            off += data_bytes;
-            data_off += data_bytes;
+            const cell_data = data_buf[data_offset .. data_offset + data_bytes];
+            @memcpy(cell_data, src[offset .. offset + data_bytes]);
+            offset += data_bytes;
+            data_offset += data_bytes;
 
             // Determine bit length and strip completion tag (same as Cell.deserialize).
             var bit_len: usize = undefined;
@@ -374,15 +374,15 @@ pub const BoC = struct {
 
             // Read reference indices.  Each must point to an earlier cell
             // (topological order invariant: children always have lower indices).
-            ref_count_buf[i] = ref_count;
-            for (0..ref_count) |j| {
-                const idx = readUintBE(src[off .. off + s]);
-                if (idx >= i) return cell_mod.ErrCell.InvalidCellDescriptor;
-                ref_idx_buf[i * 4 + j] = idx;
-                off += s;
+            ref_count_buf[cell_i] = ref_count;
+            for (0..ref_count) |ref_i| {
+                const ref_idx = readUintBE(src[offset .. offset + cell_index_bytes]);
+                if (ref_idx >= cell_i) return cell_mod.ErrCell.InvalidCellDescriptor;
+                ref_idx_buf[cell_i * 4 + ref_i] = ref_idx;
+                offset += cell_index_bytes;
             }
 
-            cell_buf[i] = .{
+            cell_buf[cell_i] = .{
                 .T = cell_type,
                 .Data = cell_data,
                 .data_bit_len = bit_len,
@@ -392,16 +392,16 @@ pub const BoC = struct {
         }
 
         // Wire up references now that all Cell structs are in their final locations.
-        for (0..n) |i| {
-            for (0..ref_count_buf[i]) |j| {
-                cell_buf[i].References[j] = &cell_buf[ref_idx_buf[i * 4 + j]];
+        for (0..cell_count) |cell_i| {
+            for (0..ref_count_buf[cell_i]) |ref_i| {
+                cell_buf[cell_i].References[ref_i] = &cell_buf[ref_idx_buf[cell_i * 4 + ref_i]];
             }
         }
 
         // Build the pointer array that BoC.cells exposes.
-        const cells_out = try allocator.alloc(*Cell, n);
+        const cells_out = try allocator.alloc(*Cell, cell_count);
         errdefer allocator.free(cells_out);
-        for (0..n) |i| cells_out[i] = &cell_buf[i];
+        for (0..cell_count) |cell_i| cells_out[cell_i] = &cell_buf[cell_i];
 
         return Self{
             .allocator = allocator,
@@ -423,13 +423,13 @@ test "fromCells empty roots" {
 test "fromCells single leaf" {
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var roots = [_]*Cell{&leaf};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
-    try testing.expectEqual(@as(usize, 1), b.cells.len);
-    try testing.expectEqual(@as(usize, 1), b.roots.len);
-    try testing.expectEqual(@as(usize, 0), b.roots[0]);
-    try testing.expectEqual(&leaf, b.cells[0]);
+    try testing.expectEqual(@as(usize, 1), boc.cells.len);
+    try testing.expectEqual(@as(usize, 1), boc.roots.len);
+    try testing.expectEqual(@as(usize, 0), boc.roots[0]);
+    try testing.expectEqual(&leaf, boc.cells[0]);
 }
 
 test "fromCells chain" {
@@ -438,14 +438,14 @@ test "fromCells chain" {
     var mid = Cell.init(.Ordinary, &.{}, 0, .{ &leaf, null, null, null });
     var root = Cell.init(.Ordinary, &.{}, 0, .{ &mid, null, null, null });
     var roots = [_]*Cell{&root};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
-    try testing.expectEqual(@as(usize, 3), b.cells.len);
-    try testing.expectEqual(&leaf, b.cells[0]);
-    try testing.expectEqual(&mid, b.cells[1]);
-    try testing.expectEqual(&root, b.cells[2]);
-    try testing.expectEqual(@as(usize, 2), b.roots[0]);
+    try testing.expectEqual(@as(usize, 3), boc.cells.len);
+    try testing.expectEqual(&leaf, boc.cells[0]);
+    try testing.expectEqual(&mid, boc.cells[1]);
+    try testing.expectEqual(&root, boc.cells[2]);
+    try testing.expectEqual(@as(usize, 2), boc.roots[0]);
 }
 
 test "fromCells shared child" {
@@ -456,15 +456,15 @@ test "fromCells shared child" {
     var right = Cell.init(.Ordinary, &.{}, 0, .{ &leaf, null, null, null });
     var root = Cell.init(.Ordinary, &.{}, 0, .{ &left, &right, null, null });
     var roots = [_]*Cell{&root};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
-    try testing.expectEqual(@as(usize, 4), b.cells.len);
-    try testing.expectEqual(&leaf, b.cells[0]);
-    try testing.expectEqual(&left, b.cells[1]);
-    try testing.expectEqual(&right, b.cells[2]);
-    try testing.expectEqual(&root, b.cells[3]);
-    try testing.expectEqual(@as(usize, 3), b.roots[0]);
+    try testing.expectEqual(@as(usize, 4), boc.cells.len);
+    try testing.expectEqual(&leaf, boc.cells[0]);
+    try testing.expectEqual(&left, boc.cells[1]);
+    try testing.expectEqual(&right, boc.cells[2]);
+    try testing.expectEqual(&root, boc.cells[3]);
+    try testing.expectEqual(@as(usize, 3), boc.roots[0]);
 }
 
 test "fromCells multiple roots" {
@@ -472,48 +472,48 @@ test "fromCells multiple roots" {
     var a = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var b_cell = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var roots = [_]*Cell{ &a, &b_cell };
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
-    try testing.expectEqual(@as(usize, 2), b.cells.len);
-    try testing.expectEqual(@as(usize, 0), b.roots[0]);
-    try testing.expectEqual(@as(usize, 1), b.roots[1]);
+    try testing.expectEqual(@as(usize, 2), boc.cells.len);
+    try testing.expectEqual(@as(usize, 0), boc.roots[0]);
+    try testing.expectEqual(@as(usize, 1), boc.roots[1]);
 }
 
 test "fromCells too many cells" {
-    const n = MaxBoCCells + 1;
-    const cells = try testing.allocator.alloc(Cell, n);
+    const cell_count = boc_cells_max + 1;
+    const cells = try testing.allocator.alloc(Cell, cell_count);
     defer testing.allocator.free(cells);
 
     cells[0] = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
-    for (1..n) |i| {
+    for (1..cell_count) |i| {
         cells[i] = Cell.init(.Ordinary, &.{}, 0, .{ &cells[i - 1], null, null, null });
     }
-    var roots = [_]*Cell{&cells[n - 1]};
+    var roots = [_]*Cell{&cells[cell_count - 1]};
     try testing.expectError(ErrBoC.TooManyCells, BoC.fromCells(testing.allocator, &roots));
 }
 
 // serializedSize ---------------------------------------------------------------
 
 test "serializedSize single leaf" {
-    // s=1, tot_cells=2 (d1+d2, no data, no refs), t=1
+    // cell_index_bytes=1, tot_cells=2 (d1+d2, no data, no refs), offset_bytes=1
     // 4 + 1 + 1 + 3*1 + 1 + 1*1 + 2 = 13
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var roots = [_]*Cell{&leaf};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
-    try testing.expectEqual(@as(usize, 13), b.serializedSize());
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
+    try testing.expectEqual(@as(usize, 13), boc.serializedSize());
 }
 
 test "serializedSize chain two cells" {
-    // s=1, leaf=2B, root=2+1=3B, tot=5, t=1
+    // cell_index_bytes=1, leaf=2B, root=2+1=3B, tot=5, offset_bytes=1
     // 4+1+1+3+1+1+5 = 16
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var root = Cell.init(.Ordinary, &.{}, 0, .{ &leaf, null, null, null });
     var roots = [_]*Cell{&root};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
-    try testing.expectEqual(@as(usize, 16), b.serializedSize());
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
+    try testing.expectEqual(@as(usize, 16), boc.serializedSize());
 }
 
 // serialize --------------------------------------------------------------------
@@ -521,17 +521,17 @@ test "serializedSize chain two cells" {
 test "serialize single leaf header and cell data" {
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var roots = [_]*Cell{&leaf};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
     var buf: [64]u8 = undefined;
-    const sz = try b.serialize(&buf);
-    try testing.expectEqual(b.serializedSize(), sz);
+    const byte_count = try boc.serialize(&buf);
+    try testing.expectEqual(boc.serializedSize(), byte_count);
 
     // magic
     try testing.expectEqualSlices(u8, &.{ 0xb5, 0xee, 0x9c, 0x72 }, buf[0..4]);
-    try testing.expectEqual(@as(u8, 0x01), buf[4]); // flags: s=1
-    try testing.expectEqual(@as(u8, 0x01), buf[5]); // off_bytes: t=1
+    try testing.expectEqual(@as(u8, 0x01), buf[4]); // flags: cell_index_bytes=1
+    try testing.expectEqual(@as(u8, 0x01), buf[5]); // off_bytes: offset_bytes=1
     try testing.expectEqual(@as(u8, 0x01), buf[6]); // cells_count=1
     try testing.expectEqual(@as(u8, 0x01), buf[7]); // roots_count=1
     try testing.expectEqual(@as(u8, 0x00), buf[8]); // absent=0
@@ -546,12 +546,12 @@ test "serialize chain reference index" {
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var root = Cell.init(.Ordinary, &.{}, 0, .{ &leaf, null, null, null });
     var roots = [_]*Cell{&root};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
     var buf: [32]u8 = undefined;
-    const sz = try b.serialize(&buf);
-    try testing.expectEqual(@as(usize, 16), sz);
+    const byte_count = try boc.serialize(&buf);
+    try testing.expectEqual(@as(usize, 16), byte_count);
 
     try testing.expectEqual(@as(u8, 0x01), buf[10]); // root_list[0]=1
     // leaf (index 0): d1=0x00 (0 refs), d2=0x00
@@ -567,12 +567,12 @@ test "serialize cell with byte-aligned data" {
     var data = [_]u8{0xAB};
     var cell = Cell.init(.Ordinary, &data, 8, .{ null, null, null, null });
     var roots = [_]*Cell{&cell};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
     var buf: [64]u8 = undefined;
-    const sz = try b.serialize(&buf);
-    try testing.expectEqual(b.serializedSize(), sz);
+    const byte_count = try boc.serialize(&buf);
+    try testing.expectEqual(boc.serializedSize(), byte_count);
 
     // cell data starts at offset 11 (4+1+1+1+1+1+1+1)
     try testing.expectEqual(@as(u8, 0x00), buf[11]); // d1: 0 refs
@@ -584,11 +584,11 @@ test "serialize cell with non-byte-aligned data sets completion tag" {
     var data = [_]u8{0xF0}; // top 4 bits are data
     var cell = Cell.init(.Ordinary, &data, 4, .{ null, null, null, null });
     var roots = [_]*Cell{&cell};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
     var buf: [64]u8 = undefined;
-    _ = try b.serialize(&buf);
+    _ = try boc.serialize(&buf);
 
     // d2 = ceil(4/8) = 1 (non-byte-aligned: floor+ceil = 0+1 = 1)
     try testing.expectEqual(@as(u8, 0x01), buf[12]);
@@ -600,12 +600,12 @@ test "serialize multiple roots" {
     var a = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var c = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var roots = [_]*Cell{ &a, &c };
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
     var buf: [64]u8 = undefined;
-    const sz = try b.serialize(&buf);
-    try testing.expectEqual(b.serializedSize(), sz);
+    const byte_count = try boc.serialize(&buf);
+    try testing.expectEqual(boc.serializedSize(), byte_count);
 
     // roots_count=2
     try testing.expectEqual(@as(u8, 0x02), buf[7]);
@@ -621,50 +621,50 @@ test "serialize serializedSize matches actual output" {
     var right = Cell.init(.Ordinary, &.{}, 0, .{ &shared, null, null, null });
     var root = Cell.init(.Ordinary, &.{}, 0, .{ &left, &right, null, null });
     var roots = [_]*Cell{&root};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
-    const expected = b.serializedSize();
+    const expected = boc.serializedSize();
     const buf = try testing.allocator.alloc(u8, expected);
     defer testing.allocator.free(buf);
-    const actual = try b.serialize(buf);
+    const actual = try boc.serialize(buf);
     try testing.expectEqual(expected, actual);
 }
 
 test "serialize buffer too small returns error" {
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var roots = [_]*Cell{&leaf};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
     var buf: [5]u8 = undefined;
-    try testing.expectError(ErrBoC.BufferTooSmall, b.serialize(&buf));
+    try testing.expectError(ErrBoC.BufferTooSmall, boc.serialize(&buf));
 }
 
 // fromBytes --------------------------------------------------------------------
 
-fn serializeToHeap(allocator: Allocator, b: *const BoC) ![]u8 {
-    const buf = try allocator.alloc(u8, b.serializedSize());
+fn serializeToHeap(allocator: Allocator, boc: *const BoC) ![]u8 {
+    const buf = try allocator.alloc(u8, boc.serializedSize());
     errdefer allocator.free(buf);
-    _ = try b.serialize(buf);
+    _ = try boc.serialize(buf);
     return buf;
 }
 
 test "serializeIndexed has_idx bit and index table" {
-    // single leaf: s=1, tot=2, t=1
+    // single leaf: cell_index_bytes=1, tot=2, offset_bytes=1
     // serializedSizeIndexed = 13 (base) + 1 (index table) = 14
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var roots = [_]*Cell{&leaf};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
-    try testing.expectEqual(@as(usize, 14), b.serializedSizeIndexed());
+    try testing.expectEqual(@as(usize, 14), boc.serializedSizeIndexed());
 
     var buf: [64]u8 = undefined;
-    const sz = try b.serializeIndexed(&buf);
-    try testing.expectEqual(@as(usize, 14), sz);
+    const byte_count = try boc.serializeIndexed(&buf);
+    try testing.expectEqual(@as(usize, 14), byte_count);
 
-    // flags byte: has_idx (bit7) | s=1 → 0x81
+    // flags byte: has_idx (bit7) | cell_index_bytes=1 → 0x81
     try testing.expectEqual(@as(u8, 0x81), buf[4]);
     // index table is after root_list (offset 11): single entry = 2 (leaf takes 2 bytes)
     try testing.expectEqual(@as(u8, 0x02), buf[11]);
@@ -674,16 +674,16 @@ test "serializeIndexed has_idx bit and index table" {
 }
 
 test "serializeIndexed chain index table entries" {
-    // chain: leaf(0) + root(1); s=1, leaf=2B, root=3B, tot=5, t=1
+    // chain: leaf(0) + root(1); cell_index_bytes=1, leaf=2B, root=3B, tot=5, offset_bytes=1
     // index table: [2, 5]  (cumulative offsets)
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var root = Cell.init(.Ordinary, &.{}, 0, .{ &leaf, null, null, null });
     var roots = [_]*Cell{&root};
-    var b = try BoC.fromCells(testing.allocator, &roots);
-    defer b.deinit();
+    var boc = try BoC.fromCells(testing.allocator, &roots);
+    defer boc.deinit();
 
     var buf: [64]u8 = undefined;
-    _ = try b.serializeIndexed(&buf);
+    _ = try boc.serializeIndexed(&buf);
 
     // root_list ends at offset 11; index table starts there
     try testing.expectEqual(@as(u8, 0x02), buf[11]); // end of cell[0]: 2
@@ -696,76 +696,76 @@ test "serializeIndexed round-trip via fromBytes" {
     var right = Cell.init(.Ordinary, &.{}, 0, .{ &shared, null, null, null });
     var root = Cell.init(.Ordinary, &.{}, 0, .{ &left, &right, null, null });
     var roots_in = [_]*Cell{&root};
-    var b1 = try BoC.fromCells(testing.allocator, &roots_in);
-    defer b1.deinit();
+    var boc1 = try BoC.fromCells(testing.allocator, &roots_in);
+    defer boc1.deinit();
 
-    const buf = try testing.allocator.alloc(u8, b1.serializedSizeIndexed());
+    const buf = try testing.allocator.alloc(u8, boc1.serializedSizeIndexed());
     defer testing.allocator.free(buf);
-    _ = try b1.serializeIndexed(buf);
+    _ = try boc1.serializeIndexed(buf);
 
-    var b2 = try BoC.fromBytes(testing.allocator, buf);
-    defer b2.deinit();
+    var boc2 = try BoC.fromBytes(testing.allocator, buf);
+    defer boc2.deinit();
 
-    try testing.expectEqual(@as(usize, 4), b2.cells.len);
-    const r = b2.cells[3];
+    try testing.expectEqual(@as(usize, 4), boc2.cells.len);
+    const r = boc2.cells[3];
     try testing.expectEqual(r.References[0].?.References[0].?, r.References[1].?.References[0].?);
 }
 
 test "serializeIndexedCrc round-trip via fromBytes" {
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var roots_in = [_]*Cell{&leaf};
-    var b1 = try BoC.fromCells(testing.allocator, &roots_in);
-    defer b1.deinit();
+    var boc1 = try BoC.fromCells(testing.allocator, &roots_in);
+    defer boc1.deinit();
 
-    const buf = try testing.allocator.alloc(u8, b1.serializedSizeIndexedCrc());
+    const buf = try testing.allocator.alloc(u8, boc1.serializedSizeIndexedCrc());
     defer testing.allocator.free(buf);
-    _ = try b1.serializeIndexedCrc(buf);
+    _ = try boc1.serializeIndexedCrc(buf);
 
     // flags byte must have both has_idx (bit7) and has_crc32c (bit6) set
     try testing.expectEqual(@as(u8, 0x81 | 0x40), buf[4]);
 
-    var b2 = try BoC.fromBytes(testing.allocator, buf);
-    defer b2.deinit();
-    try testing.expectEqual(@as(usize, 1), b2.cells.len);
-    try testing.expectEqual(@as(usize, 0), b2.roots[0]);
+    var boc2 = try BoC.fromBytes(testing.allocator, buf);
+    defer boc2.deinit();
+    try testing.expectEqual(@as(usize, 1), boc2.cells.len);
+    try testing.expectEqual(@as(usize, 0), boc2.roots[0]);
 }
 
 test "fromBytes round-trip single leaf" {
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var roots_in = [_]*Cell{&leaf};
-    var b1 = try BoC.fromCells(testing.allocator, &roots_in);
-    defer b1.deinit();
+    var boc1 = try BoC.fromCells(testing.allocator, &roots_in);
+    defer boc1.deinit();
 
-    const buf = try serializeToHeap(testing.allocator, &b1);
+    const buf = try serializeToHeap(testing.allocator, &boc1);
     defer testing.allocator.free(buf);
 
-    var b2 = try BoC.fromBytes(testing.allocator, buf);
-    defer b2.deinit();
+    var boc2 = try BoC.fromBytes(testing.allocator, buf);
+    defer boc2.deinit();
 
-    try testing.expectEqual(@as(usize, 1), b2.cells.len);
-    try testing.expectEqual(@as(usize, 0), b2.roots[0]);
-    try testing.expectEqual(@as(usize, 0), b2.cells[0].data_bit_len);
-    try testing.expect(b2.cells[0].References[0] == null);
+    try testing.expectEqual(@as(usize, 1), boc2.cells.len);
+    try testing.expectEqual(@as(usize, 0), boc2.roots[0]);
+    try testing.expectEqual(@as(usize, 0), boc2.cells[0].data_bit_len);
+    try testing.expect(boc2.cells[0].References[0] == null);
 }
 
 test "fromBytes round-trip chain wires references" {
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var root = Cell.init(.Ordinary, &.{}, 0, .{ &leaf, null, null, null });
     var roots_in = [_]*Cell{&root};
-    var b1 = try BoC.fromCells(testing.allocator, &roots_in);
-    defer b1.deinit();
+    var boc1 = try BoC.fromCells(testing.allocator, &roots_in);
+    defer boc1.deinit();
 
-    const buf = try serializeToHeap(testing.allocator, &b1);
+    const buf = try serializeToHeap(testing.allocator, &boc1);
     defer testing.allocator.free(buf);
 
-    var b2 = try BoC.fromBytes(testing.allocator, buf);
-    defer b2.deinit();
+    var boc2 = try BoC.fromBytes(testing.allocator, buf);
+    defer boc2.deinit();
 
-    try testing.expectEqual(@as(usize, 2), b2.cells.len);
+    try testing.expectEqual(@as(usize, 2), boc2.cells.len);
     // root is at index 1, its first reference should point to leaf at index 0
-    const deserialized_root = b2.cells[1];
+    const deserialized_root = boc2.cells[1];
     try testing.expect(deserialized_root.References[0] != null);
-    try testing.expectEqual(b2.cells[0], deserialized_root.References[0].?);
+    try testing.expectEqual(boc2.cells[0], deserialized_root.References[0].?);
     try testing.expect(deserialized_root.References[1] == null);
 }
 
@@ -773,35 +773,35 @@ test "fromBytes round-trip with byte-aligned data" {
     var data = [_]u8{ 0xDE, 0xAD };
     var cell = Cell.init(.Ordinary, &data, 16, .{ null, null, null, null });
     var roots_in = [_]*Cell{&cell};
-    var b1 = try BoC.fromCells(testing.allocator, &roots_in);
-    defer b1.deinit();
+    var boc1 = try BoC.fromCells(testing.allocator, &roots_in);
+    defer boc1.deinit();
 
-    const buf = try serializeToHeap(testing.allocator, &b1);
+    const buf = try serializeToHeap(testing.allocator, &boc1);
     defer testing.allocator.free(buf);
 
-    var b2 = try BoC.fromBytes(testing.allocator, buf);
-    defer b2.deinit();
+    var boc2 = try BoC.fromBytes(testing.allocator, buf);
+    defer boc2.deinit();
 
-    try testing.expectEqual(@as(usize, 16), b2.cells[0].data_bit_len);
-    try testing.expectEqual(@as(u8, 0xDE), b2.cells[0].Data[0]);
-    try testing.expectEqual(@as(u8, 0xAD), b2.cells[0].Data[1]);
+    try testing.expectEqual(@as(usize, 16), boc2.cells[0].data_bit_len);
+    try testing.expectEqual(@as(u8, 0xDE), boc2.cells[0].Data[0]);
+    try testing.expectEqual(@as(u8, 0xAD), boc2.cells[0].Data[1]);
 }
 
 test "fromBytes round-trip non-byte-aligned data" {
     var data = [_]u8{0xF0}; // top 4 bits are the payload
     var cell = Cell.init(.Ordinary, &data, 4, .{ null, null, null, null });
     var roots_in = [_]*Cell{&cell};
-    var b1 = try BoC.fromCells(testing.allocator, &roots_in);
-    defer b1.deinit();
+    var boc1 = try BoC.fromCells(testing.allocator, &roots_in);
+    defer boc1.deinit();
 
-    const buf = try serializeToHeap(testing.allocator, &b1);
+    const buf = try serializeToHeap(testing.allocator, &boc1);
     defer testing.allocator.free(buf);
 
-    var b2 = try BoC.fromBytes(testing.allocator, buf);
-    defer b2.deinit();
+    var boc2 = try BoC.fromBytes(testing.allocator, buf);
+    defer boc2.deinit();
 
-    try testing.expectEqual(@as(usize, 4), b2.cells[0].data_bit_len);
-    try testing.expectEqual(@as(u8, 0xF0), b2.cells[0].Data[0]);
+    try testing.expectEqual(@as(usize, 4), boc2.cells[0].data_bit_len);
+    try testing.expectEqual(@as(u8, 0xF0), boc2.cells[0].Data[0]);
 }
 
 test "fromBytes round-trip diamond DAG" {
@@ -810,18 +810,18 @@ test "fromBytes round-trip diamond DAG" {
     var right = Cell.init(.Ordinary, &.{}, 0, .{ &shared, null, null, null });
     var root = Cell.init(.Ordinary, &.{}, 0, .{ &left, &right, null, null });
     var roots_in = [_]*Cell{&root};
-    var b1 = try BoC.fromCells(testing.allocator, &roots_in);
-    defer b1.deinit();
+    var boc1 = try BoC.fromCells(testing.allocator, &roots_in);
+    defer boc1.deinit();
 
-    const buf = try serializeToHeap(testing.allocator, &b1);
+    const buf = try serializeToHeap(testing.allocator, &boc1);
     defer testing.allocator.free(buf);
 
-    var b2 = try BoC.fromBytes(testing.allocator, buf);
-    defer b2.deinit();
+    var boc2 = try BoC.fromBytes(testing.allocator, buf);
+    defer boc2.deinit();
 
     // cells: shared(0), left(1), right(2), root(3)
-    try testing.expectEqual(@as(usize, 4), b2.cells.len);
-    const r = b2.cells[3];
+    try testing.expectEqual(@as(usize, 4), boc2.cells.len);
+    const r = boc2.cells[3];
     const l = r.References[0].?;
     const ri = r.References[1].?;
     // both left and right must reference the same shared cell
@@ -841,42 +841,42 @@ test "fromBytes error buffer too small" {
 test "fromBytes crc32c round-trip" {
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var roots_in = [_]*Cell{&leaf};
-    var b1 = try BoC.fromCells(testing.allocator, &roots_in);
-    defer b1.deinit();
+    var boc1 = try BoC.fromCells(testing.allocator, &roots_in);
+    defer boc1.deinit();
 
-    const buf = try testing.allocator.alloc(u8, b1.serializedSizeCrc());
+    const buf = try testing.allocator.alloc(u8, boc1.serializedSizeCrc());
     defer testing.allocator.free(buf);
-    _ = try b1.serializeCrc(buf);
+    _ = try boc1.serializeCrc(buf);
 
-    var b2 = try BoC.fromBytes(testing.allocator, buf);
-    defer b2.deinit();
-    try testing.expectEqual(@as(usize, 1), b2.cells.len);
-    try testing.expectEqual(@as(usize, 0), b2.roots[0]);
+    var boc2 = try BoC.fromBytes(testing.allocator, buf);
+    defer boc2.deinit();
+    try testing.expectEqual(@as(usize, 1), boc2.cells.len);
+    try testing.expectEqual(@as(usize, 0), boc2.roots[0]);
 }
 
 test "fromBytes error invalid checksum" {
     var leaf = Cell.init(.Ordinary, &.{}, 0, .{ null, null, null, null });
     var roots_in = [_]*Cell{&leaf};
-    var b1 = try BoC.fromCells(testing.allocator, &roots_in);
-    defer b1.deinit();
+    var boc1 = try BoC.fromCells(testing.allocator, &roots_in);
+    defer boc1.deinit();
 
-    const buf = try testing.allocator.alloc(u8, b1.serializedSizeCrc());
+    const buf = try testing.allocator.alloc(u8, boc1.serializedSizeCrc());
     defer testing.allocator.free(buf);
-    _ = try b1.serializeCrc(buf);
+    _ = try boc1.serializeCrc(buf);
     buf[buf.len - 1] ^= 0xFF; // corrupt the checksum
-    try testing.expectError(ErrBoC.InvalidChecksum, BoC.fromBytes(testing.allocator, buf));
+    try testing.expectError(ErrBoC.InvalidChecksum, BoC.fromBytes(testing.allocator, &buf));
 }
 
 test "fromBytes error forward reference" {
     // Craft a minimal 2-cell BoC where cell[0] claims to reference cell[1],
     // violating the topological order invariant (children must come first).
-    // Hand-build the bytes: s=1, t=1, n=2, roots=1, root_list=[1]
+    // Hand-build the bytes: cell_index_bytes=1, offset_bytes=1, n=2, roots=1, root_list=[1]
     // cell[0]: d1=0x01 (1 ref), d2=0x00, ref_idx=1  <- forward ref, invalid
     // cell[1]: d1=0x00, d2=0x00
     const buf = [_]u8{
         0xb5, 0xee, 0x9c, 0x72, // magic
-        0x01, // flags (s=1)
-        0x01, // off_bytes (t=1)
+        0x01, // flags (cell_index_bytes=1)
+        0x01, // off_bytes (offset_bytes=1)
         0x02, // cells_count=2
         0x01, // roots_count=1
         0x00, // absent=0
@@ -901,7 +901,7 @@ fn visitCell(allocator: Allocator, c: *Cell, visited: *std.AutoHashMap(*Cell, us
     }
 
     try list.append(allocator, c);
-    if (list.items.len > MaxBoCCells) return ErrBoC.TooManyCells;
+    if (list.items.len > boc_cells_max) return ErrBoC.TooManyCells;
 
     try visited.put(c, list.items.len - 1);
 }
