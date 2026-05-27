@@ -12,6 +12,7 @@ const ErrSlice = slice_mod.ErrSlice;
 pub const ErrTlb = ErrSlice || error{
     TypeValueMismatch,
     InvalidBitWidth,
+    SchemaLengthMismatch,
 };
 
 /// A TL-B primitive type descriptor.
@@ -108,6 +109,18 @@ pub fn load(slice: *CellSlice, typ: TlbType) ErrTlb!TlbValue {
             return .{ .ref = try slice.loadRef() };
         },
     }
+}
+
+/// Encode a sequence of typed fields into `builder`. `schema` and `values` must be the same length.
+pub fn storeSchema(builder: *CellBuilder, schema: []const TlbType, values: []const TlbValue) ErrTlb!void {
+    if (schema.len != values.len) return ErrTlb.SchemaLengthMismatch;
+    for (schema, values) |typ, val| try store(builder, typ, val);
+}
+
+/// Decode a sequence of typed fields from `slice` into `out`. `schema` and `out` must be the same length.
+pub fn loadSchema(slice: *CellSlice, schema: []const TlbType, out: []TlbValue) ErrTlb!void {
+    if (schema.len != out.len) return ErrTlb.SchemaLengthMismatch;
+    for (schema, out) |typ, *val| val.* = try load(slice, typ);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -268,4 +281,40 @@ test "multiple primitives in sequence" {
     try std.testing.expectEqual(@as(u64, 0xA), (try load(&cs, .{ .uint = 4 })).uint);
     try std.testing.expectEqual(true, (try load(&cs, .bool)).bool);
     try std.testing.expectEqual(@as(i64, -2), (try load(&cs, .{ .int = 4 })).int);
+}
+
+test "storeSchema/loadSchema round-trip" {
+    const schema = [_]TlbType{ .{ .uint = 8 }, .bool, .{ .int = 4 } };
+    const vals_in = [_]TlbValue{ .{ .uint = 0xFF }, .{ .bool = false }, .{ .int = -3 } };
+
+    var builder = CellBuilder.init();
+    try storeSchema(&builder, &schema, &vals_in);
+
+    var data: [cell_size_bytes_max]u8 = undefined;
+    @memcpy(data[0..2], builder.data[0..2]);
+    var cell = makeCell(&data, 13);
+    var cs = CellSlice.init(&cell);
+
+    var vals_out: [3]TlbValue = undefined;
+    try loadSchema(&cs, &schema, &vals_out);
+
+    try std.testing.expectEqual(@as(u64, 0xFF), vals_out[0].uint);
+    try std.testing.expectEqual(false, vals_out[1].bool);
+    try std.testing.expectEqual(@as(i64, -3), vals_out[2].int);
+}
+
+test "storeSchema SchemaLengthMismatch" {
+    const schema = [_]TlbType{.{ .uint = 8 }};
+    const vals = [_]TlbValue{ .{ .uint = 1 }, .{ .uint = 2 } };
+    var builder = CellBuilder.init();
+    try std.testing.expectError(ErrTlb.SchemaLengthMismatch, storeSchema(&builder, &schema, &vals));
+}
+
+test "loadSchema SchemaLengthMismatch" {
+    var data = [_]u8{0xFF};
+    var cell = makeCell(&data, 8);
+    var cs = CellSlice.init(&cell);
+    const schema = [_]TlbType{ .{ .uint = 4 }, .{ .uint = 4 } };
+    var out: [1]TlbValue = undefined;
+    try std.testing.expectError(ErrTlb.SchemaLengthMismatch, loadSchema(&cs, &schema, &out));
 }

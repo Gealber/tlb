@@ -29,3 +29,26 @@ pub const BitsVal = tlb.BitsVal;
 pub const TlbValue = tlb.TlbValue;
 pub const store = tlb.store;
 pub const load = tlb.load;
+pub const storeSchema = tlb.storeSchema;
+pub const loadSchema = tlb.loadSchema;
+
+const tl = @import("tl.zig");
+
+pub const tl_bool_true = tl.tl_bool_true;
+pub const tl_bool_false = tl.tl_bool_false;
+pub const ErrTl = tl.ErrTl;
+pub const TlType = tl.TlType;
+pub const TlValue = tl.TlValue;
+pub const TlReader = tl.TlReader;
+pub const tlEncode = tl.encode;
+pub const encodeSchema = tl.encodeSchema;
+pub const decodeSchema = tl.decodeSchema;
+
+const tl_parser = @import("tl_parser.zig");
+
+pub const ErrTlParser = tl_parser.ErrTlParser;
+pub const TlFieldType = tl_parser.TlFieldType;
+pub const TlField = tl_parser.TlField;
+pub const TlConstructor = tl_parser.TlConstructor;
+pub const tlParse = tl_parser.parse;
+pub const tlParserDeinit = tl_parser.deinit;
