@@ -32,10 +32,10 @@ pub const TlConstructor = struct {
 /// Multi-line declarations (lines not ending with `;`) are silently skipped.
 /// Call `deinit` to free allocated memory.
 pub fn parse(allocator: std.mem.Allocator, source: []const u8) ErrTlParser![]TlConstructor {
-    var constructors = std.ArrayList(TlConstructor).init(allocator);
+    var constructors = std.ArrayList(TlConstructor){};
     errdefer {
         for (constructors.items) |c| allocator.free(c.fields);
-        constructors.deinit();
+        constructors.deinit(allocator);
     }
 
     var lines = std.mem.splitScalar(u8, source, '\n');
@@ -47,10 +47,10 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) ErrTlParser![]TlC
         if (!std.mem.endsWith(u8, line, ";")) continue;
 
         const constructor = try parseLine(allocator, line);
-        try constructors.append(constructor);
+        try constructors.append(allocator, constructor);
     }
 
-    return constructors.toOwnedSlice();
+    return constructors.toOwnedSlice(allocator);
 }
 
 /// Free all memory allocated by `parse`.
@@ -82,22 +82,22 @@ fn parseLine(allocator: std.mem.Allocator, line: []const u8) ErrTlParser!TlConst
     }
     if (name.len == 0) return error.InvalidSyntax;
 
-    var fields = std.ArrayList(TlField).init(allocator);
-    errdefer fields.deinit();
+    var fields = std.ArrayList(TlField){};
+    errdefer fields.deinit(allocator);
 
     while (tokens.next()) |token| {
         const colon_pos = std.mem.indexOfScalar(u8, token, ':') orelse return error.InvalidSyntax;
         const field_name = token[0..colon_pos];
         const type_str = token[colon_pos + 1 ..];
         if (field_name.len == 0 or type_str.len == 0) return error.InvalidSyntax;
-        try fields.append(.{ .name = field_name, .typ = mapType(type_str) });
+        try fields.append(allocator, .{ .name = field_name, .typ = mapType(type_str) });
     }
 
     return .{
         .name = name,
         .tag = tag,
         .result = result,
-        .fields = try fields.toOwnedSlice(),
+        .fields = try fields.toOwnedSlice(allocator),
     };
 }
 

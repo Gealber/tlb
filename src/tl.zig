@@ -103,7 +103,7 @@ pub const TlReader = struct {
 };
 
 /// Encodes a TL primitive value, appending bytes to `list`.
-pub fn encode(list: *std.ArrayList(u8), typ: TlType, val: TlValue) ErrTl!void {
+pub fn encode(allocator: std.mem.Allocator, list: *std.ArrayList(u8), typ: TlType, val: TlValue) ErrTl!void {
     switch (typ) {
         .int => {
             const int_val = switch (val) {
@@ -112,7 +112,7 @@ pub fn encode(list: *std.ArrayList(u8), typ: TlType, val: TlValue) ErrTl!void {
             };
             var buf: [4]u8 = undefined;
             std.mem.writeInt(i32, &buf, int_val, .little);
-            try list.appendSlice(&buf);
+            try list.appendSlice(allocator, &buf);
         },
         .long => {
             const long_val = switch (val) {
@@ -121,21 +121,21 @@ pub fn encode(list: *std.ArrayList(u8), typ: TlType, val: TlValue) ErrTl!void {
             };
             var buf: [8]u8 = undefined;
             std.mem.writeInt(i64, &buf, long_val, .little);
-            try list.appendSlice(&buf);
+            try list.appendSlice(allocator, &buf);
         },
         .int128 => {
             const int128_val = switch (val) {
                 .int128 => |v| v,
                 else => return error.TypeValueMismatch,
             };
-            try list.appendSlice(&int128_val);
+            try list.appendSlice(allocator, &int128_val);
         },
         .int256 => {
             const int256_val = switch (val) {
                 .int256 => |v| v,
                 else => return error.TypeValueMismatch,
             };
-            try list.appendSlice(&int256_val);
+            try list.appendSlice(allocator, &int256_val);
         },
         .bytes => {
             const bytes_val = switch (val) {
@@ -145,18 +145,18 @@ pub fn encode(list: *std.ArrayList(u8), typ: TlType, val: TlValue) ErrTl!void {
             const byte_count = bytes_val.len;
             var header_size: usize = undefined;
             if (byte_count < 254) {
-                try list.append(@intCast(byte_count));
+                try list.append(allocator, @intCast(byte_count));
                 header_size = 1;
             } else {
-                try list.append(0xFE);
+                try list.append(allocator, 0xFE);
                 var len_buf: [3]u8 = undefined;
                 std.mem.writeInt(u24, &len_buf, @intCast(byte_count), .little);
-                try list.appendSlice(&len_buf);
+                try list.appendSlice(allocator, &len_buf);
                 header_size = 4;
             }
-            try list.appendSlice(bytes_val);
+            try list.appendSlice(allocator, bytes_val);
             const pad = (4 - (header_size + byte_count) % 4) % 4;
-            try list.appendNTimes(0, pad);
+            try list.appendNTimes(allocator, 0, pad);
         },
         .bool => {
             const bool_val = switch (val) {
@@ -165,15 +165,15 @@ pub fn encode(list: *std.ArrayList(u8), typ: TlType, val: TlValue) ErrTl!void {
             };
             var buf: [4]u8 = undefined;
             std.mem.writeInt(u32, &buf, if (bool_val) tl_bool_true else tl_bool_false, .little);
-            try list.appendSlice(&buf);
+            try list.appendSlice(allocator, &buf);
         },
     }
 }
 
 /// Encode a sequence of typed fields into `list`. `schema` and `values` must be the same length.
-pub fn encodeSchema(list: *std.ArrayList(u8), schema: []const TlType, values: []const TlValue) ErrTl!void {
+pub fn encodeSchema(allocator: std.mem.Allocator, list: *std.ArrayList(u8), schema: []const TlType, values: []const TlValue) ErrTl!void {
     if (schema.len != values.len) return error.SchemaLengthMismatch;
-    for (schema, values) |typ, val| try encode(list, typ, val);
+    for (schema, values) |typ, val| try encode(allocator, list, typ, val);
 }
 
 /// Decode a sequence of typed fields from `reader` into `out`. `schema` and `out` must be the same length.
@@ -185,9 +185,9 @@ pub fn decodeSchema(reader: *TlReader, schema: []const TlType, out: []TlValue) E
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 test "encode/decode int round-trip" {
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
-    try encode(&list, .int, .{ .int = -42 });
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.testing.allocator);
+    try encode(std.testing.allocator, &list, .int, .{ .int = -42 });
     try std.testing.expectEqual(@as(usize, 4), list.items.len);
     var reader = TlReader.init(list.items);
     const val = try reader.decode(.int);
@@ -195,9 +195,9 @@ test "encode/decode int round-trip" {
 }
 
 test "encode/decode long round-trip" {
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
-    try encode(&list, .long, .{ .long = 0x1234567890ABCDEF });
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.testing.allocator);
+    try encode(std.testing.allocator, &list, .long, .{ .long = 0x1234567890ABCDEF });
     try std.testing.expectEqual(@as(usize, 8), list.items.len);
     var reader = TlReader.init(list.items);
     const val = try reader.decode(.long);
@@ -206,9 +206,9 @@ test "encode/decode long round-trip" {
 
 test "encode/decode int128 round-trip" {
     const src = [_]u8{0xAB} ** 16;
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
-    try encode(&list, .int128, .{ .int128 = src });
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.testing.allocator);
+    try encode(std.testing.allocator, &list, .int128, .{ .int128 = src });
     try std.testing.expectEqual(@as(usize, 16), list.items.len);
     var reader = TlReader.init(list.items);
     const val = try reader.decode(.int128);
@@ -218,9 +218,9 @@ test "encode/decode int128 round-trip" {
 test "encode/decode int256 round-trip" {
     var src: [32]u8 = undefined;
     for (&src, 0..) |*b, i| b.* = @intCast(i);
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
-    try encode(&list, .int256, .{ .int256 = src });
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.testing.allocator);
+    try encode(std.testing.allocator, &list, .int256, .{ .int256 = src });
     try std.testing.expectEqual(@as(usize, 32), list.items.len);
     var reader = TlReader.init(list.items);
     const val = try reader.decode(.int256);
@@ -228,9 +228,9 @@ test "encode/decode int256 round-trip" {
 }
 
 test "encode/decode bytes short round-trip" {
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
-    try encode(&list, .bytes, .{ .bytes = "hello" });
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.testing.allocator);
+    try encode(std.testing.allocator, &list, .bytes, .{ .bytes = "hello" });
     // 1 (len) + 5 (data) + 2 (pad) = 8
     try std.testing.expectEqual(@as(usize, 8), list.items.len);
     var reader = TlReader.init(list.items);
@@ -239,9 +239,9 @@ test "encode/decode bytes short round-trip" {
 }
 
 test "encode/decode bytes empty round-trip" {
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
-    try encode(&list, .bytes, .{ .bytes = "" });
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.testing.allocator);
+    try encode(std.testing.allocator, &list, .bytes, .{ .bytes = "" });
     // 1 (len=0) + 3 (pad) = 4
     try std.testing.expectEqual(@as(usize, 4), list.items.len);
     var reader = TlReader.init(list.items);
@@ -250,9 +250,9 @@ test "encode/decode bytes empty round-trip" {
 }
 
 test "encode/decode bytes exactly 4-aligned round-trip" {
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
-    try encode(&list, .bytes, .{ .bytes = "abc" });
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.testing.allocator);
+    try encode(std.testing.allocator, &list, .bytes, .{ .bytes = "abc" });
     // 1 (len=3) + 3 (data) + 0 (pad) = 4
     try std.testing.expectEqual(@as(usize, 4), list.items.len);
     var reader = TlReader.init(list.items);
@@ -262,9 +262,9 @@ test "encode/decode bytes exactly 4-aligned round-trip" {
 
 test "encode/decode bytes long form round-trip" {
     const src = [_]u8{0xAB} ** 254;
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
-    try encode(&list, .bytes, .{ .bytes = &src });
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.testing.allocator);
+    try encode(std.testing.allocator, &list, .bytes, .{ .bytes = &src });
     // 4 (header) + 254 (data) + 2 (pad) = 260
     try std.testing.expectEqual(@as(usize, 260), list.items.len);
     var reader = TlReader.init(list.items);
@@ -274,9 +274,9 @@ test "encode/decode bytes long form round-trip" {
 
 test "encode/decode bool true and false" {
     for ([_]bool{ true, false }) |bool_val| {
-        var list = std.ArrayList(u8).init(std.testing.allocator);
-        defer list.deinit();
-        try encode(&list, .bool, .{ .bool = bool_val });
+        var list = std.ArrayList(u8){};
+        defer list.deinit(std.testing.allocator);
+        try encode(std.testing.allocator, &list, .bool, .{ .bool = bool_val });
         try std.testing.expectEqual(@as(usize, 4), list.items.len);
         var reader = TlReader.init(list.items);
         const val = try reader.decode(.bool);
@@ -291,12 +291,12 @@ test "decode bool InvalidBoolTag" {
 }
 
 test "encode TypeValueMismatch" {
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
-    try std.testing.expectError(error.TypeValueMismatch, encode(&list, .int, .{ .long = 1 }));
-    try std.testing.expectError(error.TypeValueMismatch, encode(&list, .long, .{ .int = 1 }));
-    try std.testing.expectError(error.TypeValueMismatch, encode(&list, .bool, .{ .int = 1 }));
-    try std.testing.expectError(error.TypeValueMismatch, encode(&list, .bytes, .{ .int = 1 }));
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.testing.allocator);
+    try std.testing.expectError(error.TypeValueMismatch, encode(std.testing.allocator, &list, .int, .{ .long = 1 }));
+    try std.testing.expectError(error.TypeValueMismatch, encode(std.testing.allocator, &list, .long, .{ .int = 1 }));
+    try std.testing.expectError(error.TypeValueMismatch, encode(std.testing.allocator, &list, .bool, .{ .int = 1 }));
+    try std.testing.expectError(error.TypeValueMismatch, encode(std.testing.allocator, &list, .bytes, .{ .int = 1 }));
 }
 
 test "decode NotEnoughData" {
@@ -309,11 +309,11 @@ test "decode NotEnoughData" {
 }
 
 test "multiple fields in sequence" {
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
-    try encode(&list, .int, .{ .int = 7 });
-    try encode(&list, .bool, .{ .bool = true });
-    try encode(&list, .bytes, .{ .bytes = "hi" });
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.testing.allocator);
+    try encode(std.testing.allocator, &list, .int, .{ .int = 7 });
+    try encode(std.testing.allocator, &list, .bool, .{ .bool = true });
+    try encode(std.testing.allocator, &list, .bytes, .{ .bytes = "hi" });
 
     var reader = TlReader.init(list.items);
     try std.testing.expectEqual(@as(i32, 7), (try reader.decode(.int)).int);
@@ -338,9 +338,9 @@ test "encodeSchema/decodeSchema round-trip (blockIdExt-shaped)" {
         .{ .int256 = file_hash },
     };
 
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
-    try encodeSchema(&list, &block_id_ext_schema, &vals_in);
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.testing.allocator);
+    try encodeSchema(std.testing.allocator, &list, &block_id_ext_schema, &vals_in);
     // 4 + 8 + 4 + 32 + 32 = 80 bytes
     try std.testing.expectEqual(@as(usize, 80), list.items.len);
 
@@ -358,9 +358,9 @@ test "encodeSchema/decodeSchema round-trip (blockIdExt-shaped)" {
 test "encodeSchema SchemaLengthMismatch" {
     const schema = [_]TlType{.int};
     const vals = [_]TlValue{ .{ .int = 1 }, .{ .int = 2 } };
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
-    try std.testing.expectError(error.SchemaLengthMismatch, encodeSchema(&list, &schema, &vals));
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.testing.allocator);
+    try std.testing.expectError(error.SchemaLengthMismatch, encodeSchema(std.testing.allocator, &list, &schema, &vals));
 }
 
 test "decodeSchema SchemaLengthMismatch" {
