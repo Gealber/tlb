@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     // to our consumers. We must give it a name because a Zig package can expose
     // multiple modules and consumers will need to be able to specify which
     // module they want to access.
-    const mod = b.addModule("tlb", .{
+    _ = b.addModule("tlb", .{
         // The root source file is the "entry point" of this module. Users of
         // this module will only be able to access public declarations contained
         // in this file, which means that if you have declarations that you
@@ -42,13 +42,26 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const mod_tests = b.addTest(.{
-        .root_module = mod,
-    });
-    const run_mod_tests = b.addRunArtifact(mod_tests);
-
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
+
+    const test_files = [_][]const u8{
+        "src/cell.zig",
+        "src/slice.zig",
+        "src/boc.zig",
+        "src/tlb.zig",
+        "src/tl.zig",
+        "src/tl_parser.zig",
+    };
+    for (test_files) |path| {
+        const t = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(path),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        test_step.dependOn(&b.addRunArtifact(t).step);
+    }
 
     const zbench_dep = b.dependency("zbench", .{ .target = target, .optimize = optimize });
     const bench_exe = b.addExecutable(.{

@@ -185,7 +185,7 @@ pub fn decodeSchema(reader: *TlReader, schema: []const TlType, out: []TlValue) E
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 test "encode/decode int round-trip" {
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try encode(std.testing.allocator, &list, .int, .{ .int = -42 });
     try std.testing.expectEqual(@as(usize, 4), list.items.len);
@@ -195,7 +195,7 @@ test "encode/decode int round-trip" {
 }
 
 test "encode/decode long round-trip" {
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try encode(std.testing.allocator, &list, .long, .{ .long = 0x1234567890ABCDEF });
     try std.testing.expectEqual(@as(usize, 8), list.items.len);
@@ -206,7 +206,7 @@ test "encode/decode long round-trip" {
 
 test "encode/decode int128 round-trip" {
     const src = [_]u8{0xAB} ** 16;
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try encode(std.testing.allocator, &list, .int128, .{ .int128 = src });
     try std.testing.expectEqual(@as(usize, 16), list.items.len);
@@ -218,7 +218,7 @@ test "encode/decode int128 round-trip" {
 test "encode/decode int256 round-trip" {
     var src: [32]u8 = undefined;
     for (&src, 0..) |*b, i| b.* = @intCast(i);
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try encode(std.testing.allocator, &list, .int256, .{ .int256 = src });
     try std.testing.expectEqual(@as(usize, 32), list.items.len);
@@ -228,7 +228,7 @@ test "encode/decode int256 round-trip" {
 }
 
 test "encode/decode bytes short round-trip" {
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try encode(std.testing.allocator, &list, .bytes, .{ .bytes = "hello" });
     // 1 (len) + 5 (data) + 2 (pad) = 8
@@ -239,7 +239,7 @@ test "encode/decode bytes short round-trip" {
 }
 
 test "encode/decode bytes empty round-trip" {
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try encode(std.testing.allocator, &list, .bytes, .{ .bytes = "" });
     // 1 (len=0) + 3 (pad) = 4
@@ -250,7 +250,7 @@ test "encode/decode bytes empty round-trip" {
 }
 
 test "encode/decode bytes exactly 4-aligned round-trip" {
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try encode(std.testing.allocator, &list, .bytes, .{ .bytes = "abc" });
     // 1 (len=3) + 3 (data) + 0 (pad) = 4
@@ -262,7 +262,7 @@ test "encode/decode bytes exactly 4-aligned round-trip" {
 
 test "encode/decode bytes long form round-trip" {
     const src = [_]u8{0xAB} ** 254;
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try encode(std.testing.allocator, &list, .bytes, .{ .bytes = &src });
     // 4 (header) + 254 (data) + 2 (pad) = 260
@@ -274,7 +274,7 @@ test "encode/decode bytes long form round-trip" {
 
 test "encode/decode bool true and false" {
     for ([_]bool{ true, false }) |bool_val| {
-        var list = std.ArrayList(u8){};
+        var list = std.ArrayList(u8).empty;
         defer list.deinit(std.testing.allocator);
         try encode(std.testing.allocator, &list, .bool, .{ .bool = bool_val });
         try std.testing.expectEqual(@as(usize, 4), list.items.len);
@@ -291,7 +291,7 @@ test "decode bool InvalidBoolTag" {
 }
 
 test "encode TypeValueMismatch" {
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try std.testing.expectError(error.TypeValueMismatch, encode(std.testing.allocator, &list, .int, .{ .long = 1 }));
     try std.testing.expectError(error.TypeValueMismatch, encode(std.testing.allocator, &list, .long, .{ .int = 1 }));
@@ -309,7 +309,7 @@ test "decode NotEnoughData" {
 }
 
 test "multiple fields in sequence" {
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try encode(std.testing.allocator, &list, .int, .{ .int = 7 });
     try encode(std.testing.allocator, &list, .bool, .{ .bool = true });
@@ -332,13 +332,13 @@ test "encodeSchema/decodeSchema round-trip (blockIdExt-shaped)" {
 
     const vals_in = [_]TlValue{
         .{ .int = -1 },
-        .{ .long = 0x8000000000000000 },
+        .{ .long = @as(i64, @bitCast(@as(u64, 0x8000000000000000))) },
         .{ .int = 42 },
         .{ .int256 = root_hash },
         .{ .int256 = file_hash },
     };
 
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try encodeSchema(std.testing.allocator, &list, &block_id_ext_schema, &vals_in);
     // 4 + 8 + 4 + 32 + 32 = 80 bytes
@@ -358,7 +358,7 @@ test "encodeSchema/decodeSchema round-trip (blockIdExt-shaped)" {
 test "encodeSchema SchemaLengthMismatch" {
     const schema = [_]TlType{.int};
     const vals = [_]TlValue{ .{ .int = 1 }, .{ .int = 2 } };
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try std.testing.expectError(error.SchemaLengthMismatch, encodeSchema(std.testing.allocator, &list, &schema, &vals));
 }

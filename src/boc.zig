@@ -864,7 +864,7 @@ test "fromBytes error invalid checksum" {
     defer testing.allocator.free(buf);
     _ = try boc1.serializeCrc(buf);
     buf[buf.len - 1] ^= 0xFF; // corrupt the checksum
-    try testing.expectError(ErrBoC.InvalidChecksum, BoC.fromBytes(testing.allocator, &buf));
+    try testing.expectError(ErrBoC.InvalidChecksum, BoC.fromBytes(testing.allocator, buf));
 }
 
 test "fromBytes error forward reference" {

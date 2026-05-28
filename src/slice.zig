@@ -324,7 +324,7 @@ test "CellSlice loadBit reads each bit" {
     try std.testing.expectEqual(@as(u1, 1), try cs.loadBit());
     try std.testing.expectEqual(@as(u1, 0), try cs.loadBit());
     try std.testing.expectEqual(@as(u1, 1), try cs.loadBit());
-    try std.testing.expectEqual(@as(u1, 1), cs.bitsLeft());
+    try std.testing.expectEqual(@as(usize, 5), cs.bitsLeft());
     _ = try cs.loadBit();
     _ = try cs.loadBit();
     _ = try cs.loadBit();

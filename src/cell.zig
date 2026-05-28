@@ -184,7 +184,7 @@ pub const Cell = struct {
         return result;
     }
 
-    pub fn refCount(self: *Self) usize {
+    pub fn refCount(self: *const Self) usize {
         var ref_index: usize = 0;
         while (ref_index < 4 and self.References[ref_index] != null) : (ref_index += 1) {}
         return ref_index;

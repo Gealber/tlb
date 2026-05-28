@@ -32,7 +32,7 @@ pub const TlConstructor = struct {
 /// Multi-line declarations (lines not ending with `;`) are silently skipped.
 /// Call `deinit` to free allocated memory.
 pub fn parse(allocator: std.mem.Allocator, source: []const u8) ErrTlParser![]TlConstructor {
-    var constructors = std.ArrayList(TlConstructor){};
+    var constructors = std.ArrayList(TlConstructor).empty;
     errdefer {
         for (constructors.items) |c| allocator.free(c.fields);
         constructors.deinit(allocator);
@@ -45,6 +45,7 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) ErrTlParser![]TlC
         if (std.mem.startsWith(u8, line, "//")) continue;
         if (std.mem.startsWith(u8, line, "---")) continue;
         if (!std.mem.endsWith(u8, line, ";")) continue;
+        if (std.mem.startsWith(u8, line, "=")) continue;
 
         const constructor = try parseLine(allocator, line);
         try constructors.append(allocator, constructor);
@@ -60,10 +61,10 @@ pub fn deinit(allocator: std.mem.Allocator, constructors: []TlConstructor) void 
 }
 
 fn parseLine(allocator: std.mem.Allocator, line: []const u8) ErrTlParser!TlConstructor {
-    const body = std.mem.trimRight(u8, line[0 .. line.len - 1], " \t");
+    const body = std.mem.trimEnd(u8, line[0 .. line.len - 1], " \t");
 
     const eq_pos = std.mem.lastIndexOfScalar(u8, body, '=') orelse return error.InvalidSyntax;
-    const fields_part = std.mem.trimRight(u8, body[0..eq_pos], " \t");
+    const fields_part = std.mem.trimEnd(u8, body[0..eq_pos], " \t");
     const result = std.mem.trim(u8, body[eq_pos + 1 ..], " \t");
     if (result.len == 0) return error.InvalidSyntax;
 
@@ -82,7 +83,7 @@ fn parseLine(allocator: std.mem.Allocator, line: []const u8) ErrTlParser!TlConst
     }
     if (name.len == 0) return error.InvalidSyntax;
 
-    var fields = std.ArrayList(TlField){};
+    var fields = std.ArrayList(TlField).empty;
     errdefer fields.deinit(allocator);
 
     while (tokens.next()) |token| {
