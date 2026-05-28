@@ -90,6 +90,20 @@ fn parseLine(allocator: std.mem.Allocator, line: []const u8) ErrParseLine!TlCons
     }
     if (name.len == 0) return error.InvalidSyntax;
 
+    // If no explicit tag, compute CRC32 of the canonical form:
+    // "name field1:type1 ... = Result" (space-normalized, no #tag, no ;)
+    if (tag == 0) {
+        var crc = std.hash.crc.Crc32.init();
+        var body_toks = std.mem.tokenizeScalar(u8, body, ' ');
+        _ = body_toks.next(); // skip name_tag (which may contain #tag)
+        crc.update(name);
+        while (body_toks.next()) |tok| {
+            crc.update(" ");
+            crc.update(tok);
+        }
+        tag = crc.final();
+    }
+
     var fields = std.ArrayList(TlField).empty;
     errdefer fields.deinit(allocator);
 
@@ -240,4 +254,42 @@ test "parse skips multi-line declarations silently" {
     // Only the single-line declaration is parsed
     try std.testing.expectEqual(@as(usize, 1), result.len);
     try std.testing.expectEqualStrings("liteServer.error", result[0].name);
+}
+
+test "CRC32 tag: explicit tag is preserved as-is" {
+    // tonNode.blockIdExt has explicit #b399d6db — use it, don't recompute
+    const src =
+        \\tonNode.blockIdExt#b399d6db workchain:int shard:long seqno:int root_hash:int256 file_hash:int256 = tonNode.BlockIdExt;
+    ;
+    const result = try parse(std.testing.allocator, src);
+    defer deinit(std.testing.allocator, result);
+    try std.testing.expectEqual(@as(u32, 0xb399d6db), result[0].tag);
+}
+
+test "CRC32 tag: Telegram base types match known CRC32 values" {
+    // These are ground-truth values from Telegram's TL spec
+    const src =
+        \\boolFalse = Bool;
+        \\boolTrue = Bool;
+    ;
+    const result = try parse(std.testing.allocator, src);
+    defer deinit(std.testing.allocator, result);
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqual(@as(u32, 0xbc799737), result[0].tag);
+    try std.testing.expectEqual(@as(u32, 0x997275b5), result[1].tag);
+}
+
+test "CRC32 tag: untagged constructor gets CRC32 computed" {
+    // adnl.id.short id:int256 = adnl.id.Short  (no explicit tag)
+    const src =
+        \\adnl.id.short id:int256 = adnl.id.Short;
+        \\adnl.address.udp ip:int port:int = adnl.Address;
+        \\tcp.pong random_id:long = tcp.Pong;
+    ;
+    const result = try parse(std.testing.allocator, src);
+    defer deinit(std.testing.allocator, result);
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqual(@as(u32, 0x3e3f654f), result[0].tag);
+    try std.testing.expectEqual(@as(u32, 0x670da6e7), result[1].tag);
+    try std.testing.expectEqual(@as(u32, 0xdc69fb03), result[2].tag);
 }
