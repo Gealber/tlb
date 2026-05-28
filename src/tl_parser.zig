@@ -9,6 +9,10 @@ pub const ErrTlParser = error{
     OutOfMemory,
 };
 
+/// Returned by `parseLine` for valid-TL-but-unsupported constructs (compound types,
+/// array syntax, opaque `?` fields). `parse` skips these silently.
+const ErrParseLine = ErrTlParser || error{UnsupportedSyntax};
+
 /// A field type: a primitive we can codec directly, or a named constructor reference.
 pub const TlFieldType = union(enum) {
     primitive: TlType,
@@ -47,7 +51,10 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) ErrTlParser![]TlC
         if (!std.mem.endsWith(u8, line, ";")) continue;
         if (std.mem.startsWith(u8, line, "=")) continue;
 
-        const constructor = try parseLine(allocator, line);
+        const constructor = parseLine(allocator, line) catch |err| switch (err) {
+            error.UnsupportedSyntax => continue,
+            else => |e| return e,
+        };
         try constructors.append(allocator, constructor);
     }
 
@@ -60,7 +67,7 @@ pub fn deinit(allocator: std.mem.Allocator, constructors: []TlConstructor) void 
     allocator.free(constructors);
 }
 
-fn parseLine(allocator: std.mem.Allocator, line: []const u8) ErrTlParser!TlConstructor {
+fn parseLine(allocator: std.mem.Allocator, line: []const u8) ErrParseLine!TlConstructor {
     const body = std.mem.trimEnd(u8, line[0 .. line.len - 1], " \t");
 
     const eq_pos = std.mem.lastIndexOfScalar(u8, body, '=') orelse return error.InvalidSyntax;
@@ -87,7 +94,7 @@ fn parseLine(allocator: std.mem.Allocator, line: []const u8) ErrTlParser!TlConst
     errdefer fields.deinit(allocator);
 
     while (tokens.next()) |token| {
-        const colon_pos = std.mem.indexOfScalar(u8, token, ':') orelse return error.InvalidSyntax;
+        const colon_pos = std.mem.indexOfScalar(u8, token, ':') orelse return error.UnsupportedSyntax;
         const field_name = token[0..colon_pos];
         const type_str = token[colon_pos + 1 ..];
         if (field_name.len == 0 or type_str.len == 0) return error.InvalidSyntax;
