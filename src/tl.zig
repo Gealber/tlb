@@ -182,6 +182,109 @@ pub fn decodeSchema(reader: *TlReader, schema: []const TlType, out: []TlValue) E
     for (schema, out) |typ, *val| val.* = try reader.decode(typ);
 }
 
+// ── Allocator-free encode ──────────────────────────────────────────────────────
+
+/// Returns the wire size in bytes for a TL primitive type known at comptime.
+/// `.bytes` has no static size — calling this with it is a compile error.
+pub fn typeSize(comptime typ: TlType) comptime_int {
+    return switch (typ) {
+        .int, .bool => 4,
+        .long => 8,
+        .int128 => 16,
+        .int256 => 32,
+        .bytes => @compileError("bytes has no static size; compute it from the value"),
+    };
+}
+
+/// Returns the total wire size in bytes for a fixed schema known at comptime.
+/// The schema must not contain `.bytes`.
+pub fn schemaSize(comptime schema: []const TlType) comptime_int {
+    var n: comptime_int = 0;
+    for (schema) |t| n += typeSize(t);
+    return n;
+}
+
+/// Encodes a single TL value into `out[pos..*]`, advancing `pos`.
+/// Returns `error.NotEnoughData` if `out` is too small.
+pub fn encodeToBuf(out: []u8, pos: *usize, typ: TlType, val: TlValue) ErrTl!void {
+    switch (typ) {
+        .int => {
+            const v = switch (val) {
+                .int => |v| v,
+                else => return error.TypeValueMismatch,
+            };
+            if (pos.* + 4 > out.len) return error.NotEnoughData;
+            std.mem.writeInt(i32, out[pos.*..][0..4], v, .little);
+            pos.* += 4;
+        },
+        .long => {
+            const v = switch (val) {
+                .long => |v| v,
+                else => return error.TypeValueMismatch,
+            };
+            if (pos.* + 8 > out.len) return error.NotEnoughData;
+            std.mem.writeInt(i64, out[pos.*..][0..8], v, .little);
+            pos.* += 8;
+        },
+        .int128 => {
+            const v = switch (val) {
+                .int128 => |v| v,
+                else => return error.TypeValueMismatch,
+            };
+            if (pos.* + 16 > out.len) return error.NotEnoughData;
+            @memcpy(out[pos.*..][0..16], &v);
+            pos.* += 16;
+        },
+        .int256 => {
+            const v = switch (val) {
+                .int256 => |v| v,
+                else => return error.TypeValueMismatch,
+            };
+            if (pos.* + 32 > out.len) return error.NotEnoughData;
+            @memcpy(out[pos.*..][0..32], &v);
+            pos.* += 32;
+        },
+        .bytes => {
+            const v = switch (val) {
+                .bytes => |v| v,
+                else => return error.TypeValueMismatch,
+            };
+            const byte_count = v.len;
+            const header_size: usize = if (byte_count < 254) 1 else 4;
+            const pad = (4 - (header_size + byte_count) % 4) % 4;
+            if (pos.* + header_size + byte_count + pad > out.len) return error.NotEnoughData;
+            if (byte_count < 254) {
+                out[pos.*] = @intCast(byte_count);
+                pos.* += 1;
+            } else {
+                out[pos.*] = 0xFE;
+                std.mem.writeInt(u24, out[pos.* + 1 ..][0..3], @intCast(byte_count), .little);
+                pos.* += 4;
+            }
+            @memcpy(out[pos.*..][0..byte_count], v);
+            pos.* += byte_count;
+            @memset(out[pos.*..][0..pad], 0);
+            pos.* += pad;
+        },
+        .bool => {
+            const v = switch (val) {
+                .bool => |v| v,
+                else => return error.TypeValueMismatch,
+            };
+            if (pos.* + 4 > out.len) return error.NotEnoughData;
+            std.mem.writeInt(u32, out[pos.*..][0..4], if (v) tl_bool_true else tl_bool_false, .little);
+            pos.* += 4;
+        },
+    }
+}
+
+/// Encodes a sequence of TL fields into `out`. `schema` and `values` must be the same length.
+pub fn encodeSchemaToBuf(out: []u8, schema: []const TlType, values: []const TlValue) ErrTl!void {
+    if (schema.len != values.len) return error.SchemaLengthMismatch;
+    var pos: usize = 0;
+    for (schema, values) |typ, val| try encodeToBuf(out, &pos, typ, val);
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 test "encode/decode int round-trip" {
@@ -369,4 +472,118 @@ test "decodeSchema SchemaLengthMismatch" {
     const schema = [_]TlType{ .int, .int };
     var out: [1]TlValue = undefined;
     try std.testing.expectError(error.SchemaLengthMismatch, decodeSchema(&reader, &schema, &out));
+}
+
+// ── Allocator-free encode tests ────────────────────────────────────────────────
+
+test "typeSize comptime values" {
+    try std.testing.expectEqual(4, typeSize(.int));
+    try std.testing.expectEqual(8, typeSize(.long));
+    try std.testing.expectEqual(16, typeSize(.int128));
+    try std.testing.expectEqual(32, typeSize(.int256));
+    try std.testing.expectEqual(4, typeSize(.bool));
+}
+
+test "schemaSize comptime sum" {
+    // adnl.id.short: tag (int) + id (int256) = 4 + 32 = 36
+    const schema = [_]TlType{ .int, .int256 };
+    try std.testing.expectEqual(36, schemaSize(&schema));
+}
+
+test "encodeToBuf/decode int round-trip" {
+    var buf: [4]u8 = undefined;
+    var pos: usize = 0;
+    try encodeToBuf(&buf, &pos, .int, .{ .int = -99 });
+    try std.testing.expectEqual(@as(usize, 4), pos);
+    var reader = TlReader.init(&buf);
+    try std.testing.expectEqual(@as(i32, -99), (try reader.decode(.int)).int);
+}
+
+test "encodeToBuf/decode long round-trip" {
+    var buf: [8]u8 = undefined;
+    var pos: usize = 0;
+    try encodeToBuf(&buf, &pos, .long, .{ .long = 0x0EADBEEFDEADBEEF });
+    try std.testing.expectEqual(@as(usize, 8), pos);
+    var reader = TlReader.init(&buf);
+    try std.testing.expectEqual(@as(i64, 0x0EADBEEFDEADBEEF), (try reader.decode(.long)).long);
+}
+
+test "encodeToBuf/decode int128 round-trip" {
+    const src = [_]u8{0xCD} ** 16;
+    var buf: [16]u8 = undefined;
+    var pos: usize = 0;
+    try encodeToBuf(&buf, &pos, .int128, .{ .int128 = src });
+    try std.testing.expectEqual(@as(usize, 16), pos);
+    var reader = TlReader.init(&buf);
+    try std.testing.expectEqualSlices(u8, &src, &(try reader.decode(.int128)).int128);
+}
+
+test "encodeToBuf/decode int256 round-trip" {
+    var src: [32]u8 = undefined;
+    for (&src, 0..) |*b, i| b.* = @intCast(i);
+    var buf: [32]u8 = undefined;
+    var pos: usize = 0;
+    try encodeToBuf(&buf, &pos, .int256, .{ .int256 = src });
+    try std.testing.expectEqual(@as(usize, 32), pos);
+    var reader = TlReader.init(&buf);
+    try std.testing.expectEqualSlices(u8, &src, &(try reader.decode(.int256)).int256);
+}
+
+test "encodeToBuf/decode bool round-trip" {
+    for ([_]bool{ true, false }) |b| {
+        var buf: [4]u8 = undefined;
+        var pos: usize = 0;
+        try encodeToBuf(&buf, &pos, .bool, .{ .bool = b });
+        try std.testing.expectEqual(@as(usize, 4), pos);
+        var reader = TlReader.init(&buf);
+        try std.testing.expectEqual(b, (try reader.decode(.bool)).bool);
+    }
+}
+
+test "encodeToBuf/decode bytes round-trip" {
+    // 1 (len) + 5 (data) + 2 (pad) = 8
+    var buf: [8]u8 = undefined;
+    var pos: usize = 0;
+    try encodeToBuf(&buf, &pos, .bytes, .{ .bytes = "hello" });
+    try std.testing.expectEqual(@as(usize, 8), pos);
+    var reader = TlReader.init(&buf);
+    try std.testing.expectEqualSlices(u8, "hello", (try reader.decode(.bytes)).bytes);
+}
+
+test "encodeToBuf NotEnoughData" {
+    var buf: [3]u8 = undefined;
+    var pos: usize = 0;
+    try std.testing.expectError(error.NotEnoughData, encodeToBuf(&buf, &pos, .int, .{ .int = 1 }));
+}
+
+test "encodeToBuf TypeValueMismatch" {
+    var buf: [8]u8 = undefined;
+    var pos: usize = 0;
+    try std.testing.expectError(error.TypeValueMismatch, encodeToBuf(&buf, &pos, .int, .{ .long = 1 }));
+    try std.testing.expectError(error.TypeValueMismatch, encodeToBuf(&buf, &pos, .bool, .{ .int = 1 }));
+}
+
+test "encodeSchemaToBuf/decodeSchema round-trip (adnl.id.short-shaped)" {
+    var id: [32]u8 = undefined;
+    for (&id, 0..) |*b, i| b.* = @intCast(i);
+
+    const schema = [_]TlType{ .int, .int256 };
+    var buf: [schemaSize(&schema)]u8 = undefined;
+    try encodeSchemaToBuf(&buf, &schema, &.{
+        .{ .int = @bitCast(@as(u32, 0x3e3f654f)) },
+        .{ .int256 = id },
+    });
+
+    var reader = TlReader.init(&buf);
+    var out: [2]TlValue = undefined;
+    try decodeSchema(&reader, &schema, &out);
+    try std.testing.expectEqual(@as(i32, @bitCast(@as(u32, 0x3e3f654f))), out[0].int);
+    try std.testing.expectEqualSlices(u8, &id, &out[1].int256);
+}
+
+test "encodeSchemaToBuf SchemaLengthMismatch" {
+    var buf: [4]u8 = undefined;
+    const schema = [_]TlType{.int};
+    const vals = [_]TlValue{ .{ .int = 1 }, .{ .int = 2 } };
+    try std.testing.expectError(error.SchemaLengthMismatch, encodeSchemaToBuf(&buf, &schema, &vals));
 }
