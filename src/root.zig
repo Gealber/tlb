@@ -43,6 +43,10 @@ pub const TlReader = tl.TlReader;
 pub const tlEncode = tl.encode;
 pub const encodeSchema = tl.encodeSchema;
 pub const decodeSchema = tl.decodeSchema;
+pub const typeSize = tl.typeSize;
+pub const schemaSize = tl.schemaSize;
+pub const encodeToBuf = tl.encodeToBuf;
+pub const encodeSchemaToBuf = tl.encodeSchemaToBuf;
 
 const tl_parser = @import("tl_parser.zig");
 
