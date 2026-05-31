@@ -67,6 +67,34 @@ pub fn deinit(allocator: std.mem.Allocator, constructors: []TlConstructor) void 
     allocator.free(constructors);
 }
 
+/// Returns the 4-byte constructor tag for a TL declaration line.
+/// If the declaration has an explicit `#xxxxxxxx` tag it is returned directly.
+/// Otherwise the CRC32 over the canonical form is computed:
+///   "name field:type ... = Result"  (space-normalised, no `#tag`, no `;`)
+/// The trailing semicolon is optional.
+pub fn computeTag(schema: []const u8) u32 {
+    const s = std.mem.trimEnd(u8, schema, " \t\r\n");
+    const body = if (std.mem.endsWith(u8, s, ";")) s[0 .. s.len - 1] else s;
+
+    var toks = std.mem.tokenizeScalar(u8, body, ' ');
+    const name_tag = toks.next() orelse return 0;
+
+    const name: []const u8 = if (std.mem.indexOfScalar(u8, name_tag, '#')) |h| blk: {
+        const tag_str = name_tag[h + 1 ..];
+        if (tag_str.len > 0)
+            return std.fmt.parseInt(u32, tag_str, 16) catch 0;
+        break :blk name_tag[0..h];
+    } else name_tag;
+
+    var crc = std.hash.crc.Crc32.init();
+    crc.update(name);
+    while (toks.next()) |tok| {
+        crc.update(" ");
+        crc.update(tok);
+    }
+    return crc.final();
+}
+
 fn parseLine(allocator: std.mem.Allocator, line: []const u8) ErrParseLine!TlConstructor {
     const body = std.mem.trimEnd(u8, line[0 .. line.len - 1], " \t");
 
@@ -90,19 +118,7 @@ fn parseLine(allocator: std.mem.Allocator, line: []const u8) ErrParseLine!TlCons
     }
     if (name.len == 0) return error.InvalidSyntax;
 
-    // If no explicit tag, compute CRC32 of the canonical form:
-    // "name field1:type1 ... = Result" (space-normalized, no #tag, no ;)
-    if (tag == 0) {
-        var crc = std.hash.crc.Crc32.init();
-        var body_toks = std.mem.tokenizeScalar(u8, body, ' ');
-        _ = body_toks.next(); // skip name_tag (which may contain #tag)
-        crc.update(name);
-        while (body_toks.next()) |tok| {
-            crc.update(" ");
-            crc.update(tok);
-        }
-        tag = crc.final();
-    }
+    if (tag == 0) tag = computeTag(line);
 
     var fields = std.ArrayList(TlField).empty;
     errdefer fields.deinit(allocator);
@@ -292,4 +308,37 @@ test "CRC32 tag: untagged constructor gets CRC32 computed" {
     try std.testing.expectEqual(@as(u32, 0x3e3f654f), result[0].tag);
     try std.testing.expectEqual(@as(u32, 0x670da6e7), result[1].tag);
     try std.testing.expectEqual(@as(u32, 0xdc69fb03), result[2].tag);
+}
+
+// ── computeTag tests ───────────────────────────────────────────────────────────
+
+test "computeTag: explicit tag is returned as-is" {
+    try std.testing.expectEqual(
+        @as(u32, 0xb399d6db),
+        computeTag("tonNode.blockIdExt#b399d6db workchain:int shard:long seqno:int root_hash:int256 file_hash:int256 = tonNode.BlockIdExt;"),
+    );
+}
+
+test "computeTag: CRC32 computed for untagged declaration" {
+    try std.testing.expectEqual(@as(u32, 0x3e3f654f), computeTag("adnl.id.short id:int256 = adnl.id.Short;"));
+    try std.testing.expectEqual(@as(u32, 0x670da6e7), computeTag("adnl.address.udp ip:int port:int = adnl.Address;"));
+    try std.testing.expectEqual(@as(u32, 0xdc69fb03), computeTag("tcp.pong random_id:long = tcp.Pong;"));
+}
+
+test "computeTag: trailing semicolon is optional" {
+    const with = computeTag("adnl.id.short id:int256 = adnl.id.Short;");
+    const without = computeTag("adnl.id.short id:int256 = adnl.id.Short");
+    try std.testing.expectEqual(with, without);
+}
+
+test "computeTag: Telegram base types match known CRC32 values" {
+    try std.testing.expectEqual(@as(u32, 0xbc799737), computeTag("boolFalse = Bool;"));
+    try std.testing.expectEqual(@as(u32, 0x997275b5), computeTag("boolTrue = Bool;"));
+}
+
+test "computeTag: result matches tag produced by parse" {
+    const src = "adnl.id.short id:int256 = adnl.id.Short;";
+    const constructors = try parse(std.testing.allocator, src);
+    defer deinit(std.testing.allocator, constructors);
+    try std.testing.expectEqual(constructors[0].tag, computeTag(src));
 }

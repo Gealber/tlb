@@ -52,3 +52,4 @@ pub const TlField = tl_parser.TlField;
 pub const TlConstructor = tl_parser.TlConstructor;
 pub const tlParse = tl_parser.parse;
 pub const tlParserDeinit = tl_parser.deinit;
+pub const tlComputeTag = tl_parser.computeTag;
