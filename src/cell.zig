@@ -142,10 +142,10 @@ pub const Cell = struct {
         if (is_special) {
             if (data_bytes < 1) return ErrCell.InvalidCellDescriptor;
             self.T = switch (self.Data[0]) {
-                @intFromEnum(ExoticType.PrunedBranch) => .PrunedBranch,
-                @intFromEnum(ExoticType.LibraryReference) => .LibraryReference,
-                @intFromEnum(ExoticType.MerkleProof) => .MerkleProof,
-                @intFromEnum(ExoticType.MerkleUpdate) => .MerkleUpdate,
+                @backingInt(ExoticType.PrunedBranch) => .PrunedBranch,
+                @backingInt(ExoticType.LibraryReference) => .LibraryReference,
+                @backingInt(ExoticType.MerkleProof) => .MerkleProof,
+                @backingInt(ExoticType.MerkleUpdate) => .MerkleUpdate,
                 else => return ErrCell.InvalidCellDescriptor,
             };
         } else {
@@ -373,10 +373,10 @@ test "deserialize non-byte-aligned data strips completion tag" {
 
 test "deserialize exotic cell recognizes all types" {
     const cases = [_]struct { ct: CellT, tb: u8 }{
-        .{ .ct = .PrunedBranch, .tb = @intFromEnum(ExoticType.PrunedBranch) },
-        .{ .ct = .LibraryReference, .tb = @intFromEnum(ExoticType.LibraryReference) },
-        .{ .ct = .MerkleProof, .tb = @intFromEnum(ExoticType.MerkleProof) },
-        .{ .ct = .MerkleUpdate, .tb = @intFromEnum(ExoticType.MerkleUpdate) },
+        .{ .ct = .PrunedBranch, .tb = @backingInt(ExoticType.PrunedBranch) },
+        .{ .ct = .LibraryReference, .tb = @backingInt(ExoticType.LibraryReference) },
+        .{ .ct = .MerkleProof, .tb = @backingInt(ExoticType.MerkleProof) },
+        .{ .ct = .MerkleUpdate, .tb = @backingInt(ExoticType.MerkleUpdate) },
     };
     for (cases) |c| {
         var data = [_]u8{c.tb};

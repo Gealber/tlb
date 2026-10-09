@@ -86,7 +86,7 @@ pub fn computeTag(schema: []const u8) u32 {
         break :blk name_tag[0..h];
     } else name_tag;
 
-    var crc = std.hash.crc.Crc32.init();
+    var crc = std.hash.Crc32.init();
     crc.update(name);
     while (toks.next()) |tok| {
         crc.update(" ");

@@ -98,7 +98,7 @@ pub fn load(slice: *CellSlice, typ: TlbType) ErrTlb!TlbValue {
         },
         .bits => |bit_count| {
             if (bit_count == 0) return ErrTlb.InvalidBitWidth;
-            var bits_val = BitsVal{ .data = [_]u8{0} ** cell_size_bytes_max, .bit_count = bit_count };
+            var bits_val = BitsVal{ .data = @splat(0), .bit_count = bit_count };
             try slice.loadBits(&bits_val.data, bit_count);
             return .{ .bits = bits_val };
         },
@@ -185,7 +185,7 @@ test "store/load bool true and false" {
 
 test "store/load bits round-trip" {
     const src = [_]u8{ 0xDE, 0xAD };
-    var bits_val = BitsVal{ .data = [_]u8{0} ** cell_size_bytes_max, .bit_count = 16 };
+    var bits_val = BitsVal{ .data = @splat(0), .bit_count = 16 };
     @memcpy(bits_val.data[0..2], &src);
 
     var builder = CellBuilder.init();
@@ -228,7 +228,7 @@ test "store/load uint InvalidBitWidth on n=0 and n=65" {
     try std.testing.expectError(ErrTlb.InvalidBitWidth, store(&builder, .{ .uint = 0 }, .{ .uint = 0 }));
     try std.testing.expectError(ErrTlb.InvalidBitWidth, store(&builder, .{ .uint = 65 }, .{ .uint = 0 }));
 
-    var data: [cell_size_bytes_max]u8 = [_]u8{0} ** cell_size_bytes_max;
+    var data: [cell_size_bytes_max]u8 = @splat(0);
     var cell = makeCell(&data, 64);
     var cs = CellSlice.init(&cell);
     try std.testing.expectError(ErrTlb.InvalidBitWidth, load(&cs, .{ .uint = 0 }));
@@ -237,17 +237,17 @@ test "store/load uint InvalidBitWidth on n=0 and n=65" {
 
 test "store/load bits InvalidBitWidth on n=0" {
     var builder = CellBuilder.init();
-    const bits_val = BitsVal{ .data = [_]u8{0} ** cell_size_bytes_max, .bit_count = 0 };
+    const bits_val = BitsVal{ .data = @splat(0), .bit_count = 0 };
     try std.testing.expectError(ErrTlb.InvalidBitWidth, store(&builder, .{ .bits = 0 }, .{ .bits = bits_val }));
 
-    var data: [cell_size_bytes_max]u8 = [_]u8{0} ** cell_size_bytes_max;
+    var data: [cell_size_bytes_max]u8 = @splat(0);
     var cell = makeCell(&data, 8);
     var cs = CellSlice.init(&cell);
     try std.testing.expectError(ErrTlb.InvalidBitWidth, load(&cs, .{ .bits = 0 }));
 }
 
 test "store bits TypeValueMismatch when bits_val.bit_count != typ bit_count" {
-    const bits_val = BitsVal{ .data = [_]u8{0} ** cell_size_bytes_max, .bit_count = 8 };
+    const bits_val = BitsVal{ .data = @splat(0), .bit_count = 8 };
     var builder = CellBuilder.init();
     try std.testing.expectError(ErrTlb.TypeValueMismatch, store(&builder, .{ .bits = 16 }, .{ .bits = bits_val }));
 }

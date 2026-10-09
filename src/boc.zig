@@ -2,7 +2,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
-const crc32c = std.hash.crc.Crc32Iscsi.hash;
+const crc32c = std.hash.crc.@"CRC-32/ISCSI".hash;
 
 const cell_mod = @import("cell.zig");
 pub const Cell = cell_mod.Cell;

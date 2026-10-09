@@ -208,7 +208,7 @@ pub const CellBuilder = struct {
 
     pub fn init() Self {
         return .{
-            .data = [_]u8{0} ** cell_size_bytes_max,
+            .data = @splat(0),
             .bit_len = 0,
             .refs = .{ null, null, null, null },
             .ref_count = 0,
@@ -621,7 +621,7 @@ test "round-trip: storeBits then loadBits" {
     }
 
     var cs = CellSlice.init(cell);
-    var dst = [_]u8{0} ** 4;
+    var dst: [4]u8 = @splat(0);
     try cs.loadBits(&dst, 32);
     try std.testing.expectEqualSlices(u8, &src, &dst);
 }

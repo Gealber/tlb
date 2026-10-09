@@ -308,7 +308,7 @@ test "encode/decode long round-trip" {
 }
 
 test "encode/decode int128 round-trip" {
-    const src = [_]u8{0xAB} ** 16;
+    const src: [16]u8 = @splat(0xAB);
     var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try encode(std.testing.allocator, &list, .int128, .{ .int128 = src });
@@ -364,7 +364,7 @@ test "encode/decode bytes exactly 4-aligned round-trip" {
 }
 
 test "encode/decode bytes long form round-trip" {
-    const src = [_]u8{0xAB} ** 254;
+    const src: [254]u8 = @splat(0xAB);
     var list = std.ArrayList(u8).empty;
     defer list.deinit(std.testing.allocator);
     try encode(std.testing.allocator, &list, .bytes, .{ .bytes = &src });
@@ -467,7 +467,7 @@ test "encodeSchema SchemaLengthMismatch" {
 }
 
 test "decodeSchema SchemaLengthMismatch" {
-    const data = [_]u8{0} ** 8;
+    const data: [8]u8 = @splat(0);
     var reader = TlReader.init(&data);
     const schema = [_]TlType{ .int, .int };
     var out: [1]TlValue = undefined;
@@ -509,7 +509,7 @@ test "encodeToBuf/decode long round-trip" {
 }
 
 test "encodeToBuf/decode int128 round-trip" {
-    const src = [_]u8{0xCD} ** 16;
+    const src: [16]u8 = @splat(0xCD);
     var buf: [16]u8 = undefined;
     var pos: usize = 0;
     try encodeToBuf(&buf, &pos, .int128, .{ .int128 = src });
